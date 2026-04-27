@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lerobot-playground"
+version = "0.1.0"
+description = "LeRobot SO101 experiments: multi-camera fusion, teleop + Foxglove viewer, flow IK, SAM fused PCD."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.22",
+    "opencv-python-headless>=4.8",
+    "open3d>=0.17",
+    "imageio>=2.31",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "matplotlib>=3.7",
+    "PyYAML>=6.0",
+    "Pillow>=10.0",
+    "lerobot",
+    "urchin",
+    "foxglove-sdk",
+]
+
+[project.optional-dependencies]
+realsense = ["pyrealsense2"]
+viser = ["viser", "trimesh"]
+sam = [
+    "torch>=2.0",
+    "transformers>=4.36",
+    "tqdm",
+    "supervision",
+]
+
+[project.scripts]
+lerobot-teleop = "lerobot_playground.control.teleop:main"
+lerobot-flow-solver = "lerobot_playground.control.flow_solver:main"
+lerobot-sam-fused-pcd = "lerobot_playground.sam_fused_pcd:main"
+lerobot-flow-solver-so101 = "lerobot_playground.control.flow_solver_so101:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lerobot_playground = ["calibration/**/*"]

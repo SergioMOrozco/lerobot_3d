@@ -4,3 +4,6 @@ models/
 recordings/
 results_tracking/
 calibration_files/
+*.egg-info/
+build/
+dist/
