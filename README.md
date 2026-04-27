@@ -97,9 +97,9 @@ With `--visualization foxglove` or `both`, open **Foxglove** and connect to the 
 
 ### Custom teleop script
 
-Build a **`TeleopSystemConfig`** (`lerobot_playground.hardware_config`) with **`SO101AxisConfig`** entries for each **leader** and **follower** (`port` + LeRobot `id`), **`realsense_serials`**, and optional fields (`urdf_path`, `robot_calibration_ids`, `tune`, `publish_to_foxglove`, `display_point_cloud_viewer`). **`len(leaders)` must equal `len(followers)`** (one leader action per follower). **`robot_calibration_ids`** defaults to each follower’s `id`; the **first** follower’s observation drives the mesh / TF visualization returned as **`robot_pcd`** and **`robot_link_pcds`**. Robot mesh points are sampled once at startup and then transformed by FK every step.
+Build a **`TeleopSystemConfig`** (`lerobot_playground.hardware_config`) with **`SO101AxisConfig`** entries for each **leader** and **follower** (`port` + LeRobot `id`), **`realsense_serials`**, and optional fields (`urdf_path`, `robot_calibration_ids`, `tune`, `publish_to_foxglove`, `display_point_cloud_viewer`, `mask_provider`). **`len(leaders)` must equal `len(followers)`** (one leader action per follower). **`robot_calibration_ids`** defaults to each follower’s `id`; the **first** follower’s observation drives the mesh / TF visualization returned as **`robot_pcd`** and **`robot_link_pcds`**. Robot mesh points are sampled once at startup and then transformed by FK every step.
 
-**Minimal** (same behavior as the CLI defaults, but from your own file): call **`step()`** each tick for **`scene_pcd`**, **`robot_pcd`**, and **`robot_link_pcds`**. `scene_pcd` / `robot_pcd` are **`(N, 3)`** / **`(M, 3)`** **`float64`** arrays; `robot_link_pcds` is a **`dict[str, np.ndarray]`** keyed by URDF link name. Call **`close()`** when `viewer.quit` is set:
+**Minimal** (same behavior as the CLI defaults, but from your own file): call **`step()`** each tick for **`scene_pcd`**, **`robot_pcd`**, and **`robot_link_pcds`**. `scene_pcd` / `robot_pcd` are **`(N, 3)`** / **`(M, 3)`** **`float64`** arrays; `robot_link_pcds` is a **`dict[str, np.ndarray]`** keyed by URDF link name. You can pass optional image masks into `step(masks_by_serial=...)`; nonzero / `True` pixels are kept. Call **`close()`** when `viewer.quit` is set:
 
 ```python
 import time
@@ -140,6 +140,29 @@ if __name__ == "__main__":
                 time.sleep(max(0.0, period_s - (time.monotonic() - t0)))
     finally:
         system.close()
+```
+
+If you already have masks for the current images, pass either a serial-keyed dict or a list aligned with `realsense_serials`:
+
+```python
+masks_by_serial = {
+    "YOUR_SERIAL_0": mask0,  # shape HxW, bool or uint8
+    "YOUR_SERIAL_1": mask1,
+}
+scene_pcd, robot_pcd, robot_link_pcds = system.step(masks_by_serial=masks_by_serial)
+```
+
+If masks are computed from the current camera images, put that logic in `TeleopSystemConfig.mask_provider`. It receives the raw camera datapoints before fusion and returns the same dict/list format:
+
+```python
+def mask_provider(datapoints):
+    masks = {}
+    for dp in datapoints:
+        color_bgr = dp["color"]
+        masks[dp["serial"]] = my_segmenter(color_bgr)  # HxW mask
+    return masks
+
+config = replace(TeleopSystemConfig(), mask_provider=mask_provider)
 ```
 
 For a fully custom stack (different robot type, no `TeleopPointCloudSystem`), start from **`SO101Leader`** / **`SO101Follower`** in LeRobot and **`SystemStateViewer`** in `lerobot_playground.point_clouds.system_vis`, passing a **`TeleopSystemConfig`** and calling **`update(*actions)`** with one dict per follower each tick.

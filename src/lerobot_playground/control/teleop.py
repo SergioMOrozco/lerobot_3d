@@ -27,8 +27,13 @@ class TeleopPointCloudSystem:
             leader.connect()
         print("Connected.")
 
-    def step(self) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    def step(self, masks_by_serial=None) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
         """One control cycle: read leaders, update followers and viewer, return point clouds.
+
+        Args:
+            masks_by_serial: Optional mapping ``{camera_serial: mask}`` or sequence of
+                masks aligned with ``config.realsense_serials``. Nonzero/True mask
+                pixels are kept in the fused scene point cloud.
 
         Returns:
             scene_pcd: ``(N, 3)`` ``float64`` fused scene points in world frame.
@@ -38,7 +43,7 @@ class TeleopPointCloudSystem:
         Poll ``self.viewer.quit`` to know when to stop the outer loop, then call :meth:`close`.
         """
         actions = [leader.get_action() for leader in self.leaders]
-        return self.viewer.update(*actions)
+        return self.viewer.update(*actions, masks_by_serial=masks_by_serial)
 
     def close(self) -> None:
         """Release cameras, robots, and recording resources."""

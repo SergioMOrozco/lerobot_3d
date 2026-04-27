@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,8 @@ class TeleopSystemConfig:
     """If true, start Foxglove and publish point clouds / transforms."""
     display_point_cloud_viewer: bool = False
     """If true, show full scene + robot clouds in the Open3D point cloud viewer."""
+    mask_provider: Callable[[list[dict[str, Any]]], Mapping[str, Any] | Sequence[Any] | None] | None = None
+    """Optional callback that returns one mask per camera datapoint before fusion."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "realsense_serials", tuple(self.realsense_serials))

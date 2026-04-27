@@ -3,6 +3,7 @@ import logging
 import os
 import json
 import shutil
+from collections.abc import Mapping, Sequence
 
 import open3d as o3d
 import numpy as np
@@ -93,6 +94,7 @@ class SystemStateViewer:
             if config.display_point_cloud_viewer
             else None
         )
+        self.mask_provider = config.mask_provider
 
         serials = list(config.realsense_serials)
         self.stream = MultiRealSenseStream(serials, config.extrinsic_json)
@@ -136,8 +138,11 @@ class SystemStateViewer:
             self.images[serial] = []
             self.depths[serial] = []
 
-    def update(self, *actions):
+    def update(self, *actions, masks_by_serial=None):
         # actions are simply joint states
+        #
+        # masks_by_serial can be either a mapping {serial: mask} or a sequence
+        # aligned with self.serials/datapoints. Nonzero/True mask pixels are kept.
         #
         # Returns:
         #     scene_pcd: ``(N, 3)`` float64 world points from the fused scene cloud.
@@ -158,6 +163,9 @@ class SystemStateViewer:
 
         transforms, robot_pcd_np, robot_link_pcds = self.robot_state.get_transforms(obs)
         datapoints = self.stream.get_datapoints()
+        if masks_by_serial is None and self.mask_provider is not None:
+            masks_by_serial = self.mask_provider(datapoints)
+        self._apply_masks(datapoints, masks_by_serial)
 
         if self.state_tuner is not None and self.state_tuner.capture:
             self.state_tuner.capture = False
@@ -228,6 +236,34 @@ class SystemStateViewer:
             self.pcd_viewer.update(viewer_points, viewer_colors)
 
         return scene_pcd_np, robot_pcd_np, robot_link_pcds
+
+
+    def _apply_masks(self, datapoints, masks_by_serial) -> None:
+        if masks_by_serial is None:
+            return
+
+        if isinstance(masks_by_serial, Mapping):
+            masks = [masks_by_serial.get(datapoint["serial"]) for datapoint in datapoints]
+        elif isinstance(masks_by_serial, Sequence) and not isinstance(masks_by_serial, (str, bytes)):
+            if len(masks_by_serial) != len(datapoints):
+                raise ValueError(
+                    f"Expected {len(datapoints)} masks, got {len(masks_by_serial)}"
+                )
+            masks = list(masks_by_serial)
+        else:
+            raise TypeError("masks_by_serial must be a mapping, sequence, or None")
+
+        for datapoint, mask in zip(datapoints, masks):
+            if mask is None:
+                datapoint["obj_mask"] = None
+                continue
+            mask_np = np.asarray(mask)
+            if mask_np.shape[:2] != datapoint["depth"].shape[:2]:
+                raise ValueError(
+                    f"Mask for camera {datapoint['serial']} has shape {mask_np.shape}; "
+                    f"expected {datapoint['depth'].shape[:2]}"
+                )
+            datapoint["obj_mask"] = mask_np
 
 
     def _save_scene_pcd_subgoal(self, scene_pcd: o3d.geometry.PointCloud) -> None:
