@@ -71,7 +71,10 @@ Useful flags:
 | `--recording_name NAME` | If non-empty, records RGB/depth per camera and gripper points under `recordings/NAME/`. |
 | `--extrinsic-json PATH` | Camera extrinsics JSON (see above). |
 | `--realsense-serial SERIAL` | Repeat once per camera (order must match keys in the extrinsics JSON). If omitted, uses defaults from `TeleopSystemConfig`. |
-| `--no-tune` | Disable the Tk bbox/capture tuner. |
+| `--camera-width 848` | RealSense color/depth stream width. |
+| `--camera-height 480` | RealSense color/depth stream height. |
+| `--camera-fps 60` | RealSense color/depth stream FPS. |
+| `--no-tune` | Disable the Tk capture/save control panel. |
 | `--visualization foxglove` | `foxglove`, `open3d`, `both`, or `none`. `open3d` displays the full fused scene cloud plus the robot cloud in `point_cloud_viewer`. |
 
 Examples:
@@ -89,6 +92,9 @@ lerobot-teleop --hz 10 --extrinsic-json ./my_extrinsics.json
 # Two cameras with explicit serials
 lerobot-teleop --realsense-serial 111 --realsense-serial 222
 
+# Lower camera resolution
+lerobot-teleop --camera-width 640 --camera-height 480 --camera-fps 30
+
 # Skip Foxglove and show the full scene + robot clouds in Open3D
 lerobot-teleop --visualization open3d
 ```
@@ -97,7 +103,7 @@ With `--visualization foxglove` or `both`, open **Foxglove** and connect to the 
 
 ### Custom teleop script
 
-Build a **`TeleopSystemConfig`** (`lerobot_playground.hardware_config`) with **`SO101AxisConfig`** entries for each **leader** and **follower** (`port` + LeRobot `id`), **`realsense_serials`**, and optional fields (`urdf_path`, `robot_calibration_ids`, `tune`, `publish_to_foxglove`, `display_point_cloud_viewer`, `mask_provider`). **`len(leaders)` must equal `len(followers)`** (one leader action per follower). **`robot_calibration_ids`** defaults to each follower’s `id`; the **first** follower’s observation drives the mesh / TF visualization returned as **`robot_pcd`** and **`robot_link_pcds`**. Robot mesh points are sampled once at startup and then transformed by FK every step.
+Build a **`TeleopSystemConfig`** (`lerobot_playground.hardware_config`) with **`SO101AxisConfig`** entries for each **leader** and **follower** (`port` + LeRobot `id`), **`realsense_serials`**, and optional fields (`urdf_path`, `robot_calibration_ids`, `camera_width`, `camera_height`, `camera_fps`, `tune`, `publish_to_foxglove`, `display_point_cloud_viewer`, `mask_provider`). **`len(leaders)` must equal `len(followers)`** (one leader action per follower). **`robot_calibration_ids`** defaults to each follower’s `id`; the **first** follower’s observation drives the mesh / TF visualization returned as **`robot_pcd`** and **`robot_link_pcds`**. Robot mesh points are sampled once at startup and then transformed by FK every step.
 
 **Minimal** (same behavior as the CLI defaults, but from your own file): call **`step()`** each tick for **`scene_pcd`**, **`robot_pcd`**, and **`robot_link_pcds`**. `scene_pcd` / `robot_pcd` are **`(N, 3)`** / **`(M, 3)`** **`float64`** arrays; `robot_link_pcds` is a **`dict[str, np.ndarray]`** keyed by URDF link name. You can pass optional image masks into `step(masks_by_serial=...)`; nonzero / `True` pixels are kept. Call **`close()`** when `viewer.quit` is set:
 
@@ -117,6 +123,11 @@ if __name__ == "__main__":
         realsense_serials=("YOUR_SERIAL_0", "YOUR_SERIAL_1"),
         extrinsic_json="extrinsic_calibration.json",
         recording_name="",
+        camera_width=640,
+        camera_height=480,
+        camera_fps=30,
+        action_interpolation_duration_s=0.12,
+        action_command_hz=50.0,
         publish_to_foxglove=False,
         display_point_cloud_viewer=True,
         leaders=(

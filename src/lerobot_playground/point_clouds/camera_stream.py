@@ -83,12 +83,22 @@ def get_fused_point_cloud(datapoints):
     return merged_pc, pc_list
 
 class MultiRealSenseStream:
-    def __init__(self, serial_numbers, extrinsics_file):
+    def __init__(
+        self,
+        serial_numbers,
+        extrinsics_file,
+        width: int = 848,
+        height: int = 480,
+        fps: int = 60,
+    ):
         """
         Args:
             serial_numbers (list[str]): e.g. ["0123456789", "9876543210"]
         """
         self.serial_numbers = serial_numbers
+        self.width = int(width)
+        self.height = int(height)
+        self.fps = int(fps)
         self.pipelines = {}
         self.configs = {}
 
@@ -101,8 +111,8 @@ class MultiRealSenseStream:
             config = rs.config()
 
             config.enable_device(serial)
-            config.enable_stream(rs.stream.color, 848, 480, rs.format.bgr8, 60)
-            config.enable_stream(rs.stream.depth, 848, 480, rs.format.z16, 60)
+            config.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.fps)
+            config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
 
             pipeline.start(config)
 

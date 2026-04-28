@@ -3,6 +3,9 @@ import logging
 import os
 import json
 import shutil
+import threading
+import time
+from numbers import Real
 from collections.abc import Mapping, Sequence
 
 import open3d as o3d
@@ -13,6 +16,7 @@ import cv2
 import foxglove
 from foxglove.schemas import FrameTransforms
 from foxglove.schemas import PointCloud, PackedElementField, PackedElementFieldNumericType
+from lerobot.robots.so101_follower import SO101FollowerConfig, SO101Follower
 from lerobot_playground.hardware_config import TeleopSystemConfig
 from lerobot_playground.paths import CALIBRATION_DIR
 from lerobot_playground.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
@@ -20,7 +24,6 @@ from lerobot_playground.point_clouds.point_cloud_viewer import LivePointCloudVie
 from lerobot_playground.point_clouds.robot_state import RobotState
 from lerobot_playground.point_clouds.tuner import StateTuner
 from foxglove.schemas import Pose, Vector3, Quaternion
-from lerobot.robots.so101_follower import SO101FollowerConfig, SO101Follower
 
 def foxglove_pointcloud_from_numpy(points: np.ndarray, colors=None):
 
@@ -89,6 +92,16 @@ class SystemStateViewer:
         config: TeleopSystemConfig,
     ):
         self.publish_to_foxglove = config.publish_to_foxglove
+        self.action_interpolation_duration_s = config.action_interpolation_duration_s
+        self.action_command_hz = config.action_command_hz
+        self._action_lock = threading.Lock()
+        self._follower_io_lock = threading.Lock()
+        self._action_stop_event = threading.Event()
+        self._action_thread: threading.Thread | None = None
+        self._current_actions = None
+        self._target_actions = None
+        self._start_actions = None
+        self._target_start_time = 0.0
         self.pcd_viewer = (
             LivePointCloudViewer(point_size=config.point_size)
             if config.display_point_cloud_viewer
@@ -97,7 +110,13 @@ class SystemStateViewer:
         self.mask_provider = config.mask_provider
 
         serials = list(config.realsense_serials)
-        self.stream = MultiRealSenseStream(serials, config.extrinsic_json)
+        self.stream = MultiRealSenseStream(
+            serials,
+            config.extrinsic_json,
+            width=config.camera_width,
+            height=config.camera_height,
+            fps=config.camera_fps,
+        )
         self.followers = [
             SO101Follower(SO101FollowerConfig(port=ax.port, id=ax.id)) for ax in config.followers
         ]
@@ -120,10 +139,22 @@ class SystemStateViewer:
         for bot in self.followers:
             bot.connect()
         print("Connected.")
+        if self.action_interpolation_duration_s > 0:
+            self._start_action_thread()
 
         urdf = config.urdf_path or str(CALIBRATION_DIR / "so101_new_calib.urdf")
         # FK / mesh visualization uses the first follower's observation and its calibration id.
-        self.robot_state = RobotState(urdf, config.robot_calibration_ids[0])
+        calibration_path = (
+            config.robot_calibration_paths[0]
+            if config.robot_calibration_paths is not None
+            else None
+        )
+        self.robot_state = RobotState(
+            urdf,
+            config.robot_calibration_ids[0],
+            calibration_dir=config.robot_calibration_dir,
+            calibration_path=calibration_path,
+        )
 
         if self.publish_to_foxglove:
             foxglove.set_log_level(logging.INFO)
@@ -156,10 +187,10 @@ class SystemStateViewer:
             raise ValueError(
                 f"Expected {len(self.followers)} leader actions, got {len(actions)}"
             )
-        for follower, action in zip(self.followers, actions):
-            follower.send_action(action)
+        self._set_action_targets(actions)
 
-        obs = self.followers[0].get_observation()
+        with self._follower_io_lock:
+            obs = self.followers[0].get_observation()
 
         transforms, robot_pcd_np, robot_link_pcds = self.robot_state.get_transforms(obs)
         datapoints = self.stream.get_datapoints()
@@ -238,6 +269,74 @@ class SystemStateViewer:
         return scene_pcd_np, robot_pcd_np, robot_link_pcds
 
 
+    def _start_action_thread(self) -> None:
+        self._action_thread = threading.Thread(target=self._action_loop, daemon=True)
+        self._action_thread.start()
+
+
+    def _copy_actions(self, actions):
+        return [dict(action) for action in actions]
+
+
+    def _set_action_targets(self, actions) -> None:
+        actions = self._copy_actions(actions)
+        if self.action_interpolation_duration_s <= 0:
+            self._send_actions(actions)
+            return
+
+        send_immediately = False
+        with self._action_lock:
+            if self._current_actions is None:
+                self._current_actions = self._copy_actions(actions)
+                self._start_actions = self._copy_actions(actions)
+                self._target_actions = self._copy_actions(actions)
+                send_immediately = True
+            else:
+                self._start_actions = self._copy_actions(self._current_actions)
+                self._target_actions = self._copy_actions(actions)
+            self._target_start_time = time.monotonic()
+
+        if send_immediately:
+            self._send_actions(actions)
+
+
+    def _action_loop(self) -> None:
+        period_s = 1.0 / self.action_command_hz
+        while not self._action_stop_event.is_set():
+            t0 = time.monotonic()
+            with self._action_lock:
+                actions = self._interpolated_actions_locked(t0)
+            if actions is not None:
+                self._send_actions(actions)
+            elapsed = time.monotonic() - t0
+            self._action_stop_event.wait(max(0.0, period_s - elapsed))
+
+
+    def _interpolated_actions_locked(self, now):
+        if self._target_actions is None:
+            return None
+        duration = self.action_interpolation_duration_s
+        alpha = min(1.0, max(0.0, (now - self._target_start_time) / duration))
+        actions = []
+        for start_action, target_action in zip(self._start_actions, self._target_actions):
+            out = {}
+            for key, target_value in target_action.items():
+                start_value = start_action.get(key, target_value)
+                if isinstance(start_value, Real) and isinstance(target_value, Real):
+                    out[key] = float(start_value) + alpha * (float(target_value) - float(start_value))
+                else:
+                    out[key] = target_value
+            actions.append(out)
+        self._current_actions = self._copy_actions(actions)
+        return actions
+
+
+    def _send_actions(self, actions) -> None:
+        with self._follower_io_lock:
+            for follower, action in zip(self.followers, actions):
+                follower.send_action(action)
+
+
     def _apply_masks(self, datapoints, masks_by_serial) -> None:
         if masks_by_serial is None:
             return
@@ -283,6 +382,10 @@ class SystemStateViewer:
         print(f"[SystemStateViewer] Saved fused scene to {path} ({pts.shape[0]} points)")
 
     def close(self):
+        self._action_stop_event.set()
+        if self._action_thread is not None:
+            self._action_thread.join(timeout=1.0)
+
         if self.record:
 
             recording_dir = f"recordings/{self.recording_name}"

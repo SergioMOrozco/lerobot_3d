@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 import open3d as o3d
 from foxglove.schemas import FrameTransform, Quaternion, Vector3
+from lerobot.utils.constants import HF_LEROBOT_CALIBRATION, ROBOTS
 from urchin import URDF
 
 from lerobot_playground.paths import CALIBRATION_DIR
@@ -34,10 +36,23 @@ SO101_FOLLOWER_MOTOR_LIMITS = {
 
 
 class RobotState:
-    def __init__(self, urdf_path, id):
+    def __init__(
+        self,
+        urdf_path,
+        id,
+        *,
+        robot_type: str = "so101_follower",
+        calibration_dir: str | Path | None = None,
+        calibration_path: str | Path | None = None,
+    ):
         self.robot_urdf = URDF.load(urdf_path)
 
-        robot_calibration_path = f"/home/sorozco0612/.cache/huggingface/lerobot/calibration/robots/so101_follower/{id}.json"
+        robot_calibration_path = self._resolve_calibration_path(
+            id,
+            robot_type=robot_type,
+            calibration_dir=calibration_dir,
+            calibration_path=calibration_path,
+        )
 
         with open(robot_calibration_path, "r") as f:
             calib = json.load(f)
@@ -47,6 +62,32 @@ class RobotState:
         # Cache sampled visual geometry in each link frame. Runtime only applies FK transforms.
         self.link_visual_points: list[tuple[str, np.ndarray]] = []
         self.load_robot_meshes()
+
+    def _resolve_calibration_path(
+        self,
+        id: str,
+        *,
+        robot_type: str,
+        calibration_dir: str | Path | None,
+        calibration_path: str | Path | None,
+    ) -> Path:
+        if calibration_path is not None:
+            path = Path(calibration_path).expanduser()
+        else:
+            root = (
+                Path(calibration_dir).expanduser()
+                if calibration_dir is not None
+                else HF_LEROBOT_CALIBRATION / ROBOTS / robot_type
+            )
+            path = root / f"{id}.json"
+
+        if not path.is_file():
+            raise FileNotFoundError(
+                f"Robot calibration file not found for id '{id}': {path}. "
+                "Pass TeleopSystemConfig.robot_calibration_dir / robot_calibration_paths, "
+                "or set HF_LEROBOT_CALIBRATION so LeRobot and lerobot_playground use the same files."
+            )
+        return path
 
     def ticks_to_radians(self, raw, homing_offset):
         TICKS_PER_REV = 4096

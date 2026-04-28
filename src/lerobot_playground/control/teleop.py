@@ -87,6 +87,21 @@ def main() -> None:
         default="foxglove",
         help="Visualization backend: Foxglove publishing, Open3D point_cloud_viewer, both, or none.",
     )
+    parser.add_argument("--camera-width", type=int, default=848, help="RealSense color/depth width.")
+    parser.add_argument("--camera-height", type=int, default=480, help="RealSense color/depth height.")
+    parser.add_argument("--camera-fps", type=int, default=60, help="RealSense color/depth FPS.")
+    parser.add_argument(
+        "--action-interpolation-duration",
+        type=float,
+        default=0.12,
+        help="Seconds to blend to each new follower target. Use 0 to disable smoothing.",
+    )
+    parser.add_argument(
+        "--action-command-hz",
+        type=float,
+        default=50.0,
+        help="Follower command loop rate while smoothing is enabled.",
+    )
 
     args = parser.parse_args()
 
@@ -97,6 +112,11 @@ def main() -> None:
         tune=not args.no_tune,
         publish_to_foxglove=args.visualization in ("foxglove", "both"),
         display_point_cloud_viewer=args.visualization in ("open3d", "both"),
+        camera_width=args.camera_width,
+        camera_height=args.camera_height,
+        camera_fps=args.camera_fps,
+        action_interpolation_duration_s=args.action_interpolation_duration,
+        action_command_hz=args.action_command_hz,
     )
     if args.realsense_serials is not None:
         config = replace(config, realsense_serials=tuple(args.realsense_serials))
