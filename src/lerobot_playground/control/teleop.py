@@ -27,8 +27,8 @@ class TeleopPointCloudSystem:
             leader.connect()
         print("Connected.")
 
-    def step(self, masks_by_serial=None) -> tuple[np.ndarray, np.ndarray, dict[str, np.ndarray]]:
-        """One control cycle: read leaders, update followers and viewer, return point clouds.
+    def step(self, masks_by_serial=None) -> tuple[list[dict], np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+        """One control cycle: read leaders, update followers and viewer, return sensor data.
 
         Args:
             masks_by_serial: Optional mapping ``{camera_serial: mask}`` or sequence of
@@ -36,6 +36,7 @@ class TeleopPointCloudSystem:
                 pixels are kept in the fused scene point cloud.
 
         Returns:
+            datapoints: Raw per-camera datapoints used to build the fused point cloud.
             scene_pcd: ``(N, 3)`` ``float64`` fused scene points in world frame.
             robot_pcd: ``(M, 3)`` ``float64`` sampled follower mesh in world frame (first follower).
             robot_link_pcds: per-link robot clouds keyed by URDF link name.
@@ -129,7 +130,7 @@ def main() -> None:
     try:
         while not system.viewer.quit:
             t_iter_start = time.monotonic()
-            _scene_pcd, _robot_pcd, _robot_link_pcds = system.step()
+            _datapoints, _scene_pcd, _robot_pcd, _robot_link_pcds = system.step()
             if period_s is not None:
                 elapsed = time.monotonic() - t_iter_start
                 time.sleep(max(0.0, period_s - elapsed))

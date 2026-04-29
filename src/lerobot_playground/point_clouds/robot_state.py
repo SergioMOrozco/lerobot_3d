@@ -154,7 +154,7 @@ class RobotState:
                     print(f"[WARN] Empty mesh: {mesh_path}")
                     continue
 
-                pts_mesh = np.asarray(mesh_o3d.sample_points_uniformly(1000).points)
+                pts_mesh = np.asarray(mesh_o3d.sample_points_uniformly(100).points)
 
                 T_vis = visual.origin
                 R_vis = T_vis[:3, :3]

@@ -107,7 +107,6 @@ class SystemStateViewer:
             if config.display_point_cloud_viewer
             else None
         )
-        self.mask_provider = config.mask_provider
 
         serials = list(config.realsense_serials)
         self.stream = MultiRealSenseStream(
@@ -176,6 +175,7 @@ class SystemStateViewer:
         # aligned with self.serials/datapoints. Nonzero/True mask pixels are kept.
         #
         # Returns:
+        #     datapoints: raw per-camera datapoints used to build the fused point cloud.
         #     scene_pcd: ``(N, 3)`` float64 world points from the fused scene cloud.
         #     robot_pcd: ``(M, 3)`` float64 world points for the sampled follower mesh.
         #     robot_link_pcds: per-link robot point clouds keyed by URDF link name.
@@ -194,9 +194,6 @@ class SystemStateViewer:
 
         transforms, robot_pcd_np, robot_link_pcds = self.robot_state.get_transforms(obs)
         datapoints = self.stream.get_datapoints()
-        if masks_by_serial is None and self.mask_provider is not None:
-            masks_by_serial = self.mask_provider(datapoints)
-        self._apply_masks(datapoints, masks_by_serial)
 
         if self.state_tuner is not None and self.state_tuner.capture:
             self.state_tuner.capture = False
@@ -266,7 +263,7 @@ class SystemStateViewer:
             viewer_colors = np.vstack((scene_colors, robot_colors))
             self.pcd_viewer.update(viewer_points, viewer_colors)
 
-        return scene_pcd_np, robot_pcd_np, robot_link_pcds
+        return datapoints, scene_pcd_np, robot_pcd_np, robot_link_pcds
 
 
     def _start_action_thread(self) -> None:
