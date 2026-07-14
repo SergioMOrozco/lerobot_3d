@@ -23,15 +23,6 @@ recording_name: ""
 # null -> bundled so101_new_calib.urdf under the package's calibration/ dir.
 urdf_path: null
 
-# HF / LeRobot calibration name per follower. null -> each follower's id.
-robot_calibration_ids: null
-
-# Directory containing <robot_calibration_id>.json. null uses LeRobot defaults.
-robot_calibration_dir: null
-
-# Explicit calibration JSON path per follower; overrides robot_calibration_dir.
-robot_calibration_paths: null
-
 # Show the Tk capture/save control panel.
 tune: true
 
