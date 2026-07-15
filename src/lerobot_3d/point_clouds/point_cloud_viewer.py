@@ -1,5 +1,4 @@
 import open3d as o3d
-import numpy as np
 
 class LivePointCloudViewer:
     def __init__(self, point_size=2.0):

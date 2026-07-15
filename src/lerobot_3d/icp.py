@@ -316,9 +316,7 @@ def main():
         with np.load(os.path.join(serial_dir, "depth.npz")) as data:
             depth = data['depth'] / 1000.0
 
-        # Load the image
         mask = np.array(Image.open(os.path.join(serial_dir, "mask.png")))[..., 3]
-        img = np.array(Image.open(os.path.join(serial_dir, "color.png")))
 
         pcd = depth2pcd(depth, serial, T_wc=None, mask=mask)
         pcd.paint_uniform_color([1.0, 0.0, 0.0])  # red

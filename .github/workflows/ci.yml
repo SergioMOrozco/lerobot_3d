@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check .
+
+  test-pure:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # Deliberately skip the project's own (heavy, GPU/CV-stack) dependencies here --
+      # tests/pure/ only needs the package importable plus PyYAML + pytest, so this
+      # tier stays fast and has nothing to do with open3d/lerobot/viser availability.
+      - name: Install package (no deps) + test tools
+        run: |
+          pip install --no-deps -e .
+          pip install pytest pytest-cov PyYAML
+      - run: pytest tests/pure -q --cov=lerobot_3d --cov-report=term-missing
+
+  test-full:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      # open3d/urchin/lerobot/viser (core deps) and pyrealsense2 (realsense extra,
+      # needed transitively to import system_vis.py) are all plain pip packages that
+      # don't require physical hardware to install or import -- only to actually
+      # open a camera/robot connection, which tests/hardware_stack/ never does.
+      - name: Install full dependency set
+        run: pip install -e ".[realsense,test]"
+      - run: pytest tests -q --cov=lerobot_3d --cov-report=term-missing
