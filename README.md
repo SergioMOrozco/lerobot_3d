@@ -1,5 +1,5 @@
 <p align="center">
-  <img alt="Lerobot 3D" src="./videos/lerobot_3d_thumbnail.png" width="50%">
+  <img alt="Lerobot 3D" src="./videos/lerobot_3d_thumbnail.png" width="80%">
 </p>
 
 # Lerobot 3D
