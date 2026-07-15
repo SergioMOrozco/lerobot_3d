@@ -23,15 +23,11 @@ pip install /path/to/lerobot_3d
 pip install -e ".[realsense]"
 ```
 
-Other optional extras (see `pyproject.toml`): `viser` also pulls in `trimesh`, used only by the standalone `lerobot-flow-solver-so101` demo.
-
 Import the package in Python as `lerobot_3d`, for example:
 
 ```python
 from lerobot_3d.paths import CALIBRATION_DIR
 ```
-
-Other console entry points from this repo include `lerobot-flow-solver` and `lerobot-flow-solver-so101`. Those write artifacts under the current working directory unless you set **`LEROBOT_PLAYGROUND_ARTIFACT_DIR`**.
 
 ## Teleop (`lerobot-teleop`)
 

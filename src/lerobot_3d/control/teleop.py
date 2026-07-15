@@ -1,4 +1,3 @@
-# Copyright (c) 2025 Boston Dynamics AI Institute LLC. All rights reserved.
 from __future__ import annotations
 
 import argparse

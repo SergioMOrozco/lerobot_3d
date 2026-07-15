@@ -7,3 +7,20 @@ calibration_files/
 *.egg-info/
 build/
 dist/
+
+# Python envs
+.venv/
+venv/
+env/
+
+# Test / lint / type-checker caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store

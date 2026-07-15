@@ -5,9 +5,24 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lerobot-3d"
 version = "0.1.0"
-description = "LeRobot SO101 experiments: multi-camera fusion, teleop + viser viewer, flow IK, SAM fused PCD."
+description = "SO101 teleoperation with live multi-camera point-cloud fusion and a viser-based 3D viewer, built on LeRobot."
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Sergio Orozco", email = "sergio_orozco@brown.edu" }]
+keywords = ["robotics", "lerobot", "so101", "teleoperation", "point-cloud", "computer-vision", "open3d", "viser"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Robotics",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Operating System :: POSIX :: Linux",
+]
 dependencies = [
     "numpy>=1.22",
     "opencv-python-headless>=4.8",
@@ -26,19 +41,14 @@ dependencies = [
 
 [project.optional-dependencies]
 realsense = ["pyrealsense2"]
-viser = ["trimesh"]
-sam = [
-    "torch>=2.0",
-    "transformers>=4.36",
-    "tqdm",
-    "supervision",
-]
+
+[project.urls]
+Homepage = "https://github.com/SergioMOrozco/lerobot_3d"
+Repository = "https://github.com/SergioMOrozco/lerobot_3d"
+Issues = "https://github.com/SergioMOrozco/lerobot_3d/issues"
 
 [project.scripts]
 lerobot-teleop = "lerobot_3d.control.teleop:main"
-lerobot-flow-solver = "lerobot_3d.control.flow_solver:main"
-lerobot-sam-fused-pcd = "lerobot_3d.sam_fused_pcd:main"
-lerobot-flow-solver-so101 = "lerobot_3d.control.flow_solver_so101:main"
 
 [tool.setuptools]
 include-package-data = true
