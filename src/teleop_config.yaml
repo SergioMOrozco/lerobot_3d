@@ -23,10 +23,11 @@ recording_name: ""
 # null -> bundled so101_new_calib.urdf under the package's calibration/ dir.
 urdf_path: null
 
-# Show the Tk capture/save control panel.
+# Show the viser GUI's Quit/Capture/Save-subgoal controls.
 tune: true
 
-point_size: 2.0
+# Viser point radius in world-space meters (not pixels) -- e.g. 0.003 = 3mm dots.
+point_size: 0.003
 
 # RealSense color/depth stream settings.
 camera_width: 848
@@ -38,7 +39,5 @@ action_interpolation_duration_s: 0.0
 # Follower command loop rate while action interpolation is enabled.
 action_command_hz: 50.0
 
-# Start Foxglove and publish point clouds / transforms.
-publish_to_foxglove: true
-# Show full scene + robot clouds in the Open3D point cloud viewer.
-display_point_cloud_viewer: false
+# Port for the viser server hosting the scene + robot point clouds and GUI controls.
+viser_port: 8080

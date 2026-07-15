@@ -1,6 +1,6 @@
 # lerobot_playground
 
-SO101 multi-camera teleop, fused point clouds, Foxglove logging, and related calibration utilities.
+SO101 multi-camera teleop, fused point clouds, a viser-based live viewer, and related calibration utilities.
 
 ## Install
 
@@ -23,7 +23,7 @@ pip install /path/to/lerobot_playground
 pip install -e ".[realsense]"
 ```
 
-Other optional extras (see `pyproject.toml`): `viser`.
+Other optional extras (see `pyproject.toml`): `viser` also pulls in `trimesh`, used only by the standalone `lerobot-flow-solver-so101` demo.
 
 Import the package in Python as `lerobot_playground`, for example:
 
@@ -35,13 +35,13 @@ Other console entry points from this repo include `lerobot-flow-solver` and `ler
 
 ## Teleop (`lerobot-teleop`)
 
-Teleop drives **N SO101 follower** arms from **N SO101 leader** teleoperators while streaming **one or more Intel RealSense** cameras, fusing depth into a scene point cloud, sampling the first follower’s URDF for a robot point cloud, and logging to **Foxglove** (a server is started automatically).
+Teleop drives **N SO101 follower** arms from **N SO101 leader** teleoperators while streaming **one or more Intel RealSense** cameras, fusing depth into a scene point cloud, sampling the first follower’s URDF for a robot point cloud, and rendering all of it live in **viser** (a browser-based viewer server, started automatically).
 
 ### What you need
 
 - `pyrealsense2` (use `pip install -e ".[realsense]"`).
 - **Camera extrinsics** in JSON (see below). Intrinsics can be written on shutdown when missing (see `SystemStateViewer.close`).
-- A **`teleop_config.yaml`** (see below) describing the full **`TeleopSystemConfig`**: RealSense serials, leader/follower `port` + `id`, and run settings (recording, camera stream, visualization, smoothing).
+- A **`teleop_config.yaml`** (see below) describing the full **`TeleopSystemConfig`**: RealSense serials, leader/follower `port` + `id`, and run settings (recording, camera stream, viser port, smoothing).
 
 ### Teleop config
 
@@ -63,8 +63,7 @@ tune: true
 camera_width: 848
 camera_height: 480
 camera_fps: 60
-publish_to_foxglove: true
-display_point_cloud_viewer: false
+viser_port: 8080
 ```
 
 `leaders`/`followers` must be the same length (matched by list position); `realsense_serials` needs at least one entry. See `src/teleop_config.yaml` for the full set of fields and their defaults, or `lerobot_playground.teleop_config.TeleopSystemConfig` for field docs.
@@ -92,7 +91,7 @@ Flags:
 | `--config PATH` | Teleop config YAML (see above). Omit to use the default `teleop_config.yaml`. |
 | `--hz 60` | Main loop rate in Hz (default `60`). Use `0` or negative for no pacing. This is a run-loop setting, not part of the config file. |
 
-Everything else — recording, extrinsics path, RealSense serials, camera resolution/FPS, the tune panel, and the visualization backend (`publish_to_foxglove` / `display_point_cloud_viewer`) — is set in `teleop_config.yaml`, not on the command line.
+Everything else — recording, extrinsics path, RealSense serials, camera resolution/FPS, the tune panel, and the viser port — is set in `teleop_config.yaml`, not on the command line.
 
 Examples:
 
@@ -107,11 +106,11 @@ lerobot-teleop --config ./my_teleop_config.yaml
 lerobot-teleop --hz 10
 ```
 
-With `publish_to_foxglove: true` in the config, open **Foxglove** and connect to the websocket URL printed in the console to view fused point clouds, transforms, and the robot cloud. With `display_point_cloud_viewer: true`, an Open3D `point_cloud_viewer` window displays the full fused scene point cloud and overlays the robot cloud in red. Quit from the tuner UI or your usual session flow as implemented in `StateTuner`.
+Open `http://localhost:<viser_port>` (default `8080`) in a browser to view the fused scene point cloud, the full robot point cloud, and a per-link robot point cloud for each URDF link, all updating live. With `tune: true` in the config, the same page also shows Quit / Capture / Save-subgoal buttons — Quit stops the main loop cleanly, Capture snapshots calibration images, and Save-subgoal writes the current fused scene to `subgoals/`.
 
 ### Custom teleop script
 
-Build a **`TeleopSystemConfig`** (`lerobot_playground.teleop_config`) with **`SO101AxisConfig`** entries for each **leader** and **follower** (`port` + LeRobot `id`), **`realsense_serials`**, and optional fields (`urdf_path`, `robot_calibration_ids`, `camera_width`, `camera_height`, `camera_fps`, `tune`, `publish_to_foxglove`, `display_point_cloud_viewer`). **`len(leaders)` must equal `len(followers)`** (one leader action per follower). **`robot_calibration_ids`** defaults to each follower’s `id`; the **first** follower’s observation drives the mesh / TF visualization returned as **`robot_pcd`** and **`robot_link_pcds`**. Robot mesh points are sampled once at startup and then transformed by FK every step.
+Build a **`TeleopSystemConfig`** (`lerobot_playground.teleop_config`) with **`SO101AxisConfig`** entries for each **leader** and **follower** (`port` + LeRobot `id`), **`realsense_serials`**, and optional fields (`urdf_path`, `robot_calibration_ids`, `camera_width`, `camera_height`, `camera_fps`, `tune`, `viser_port`). **`len(leaders)` must equal `len(followers)`** (one leader action per follower). **`robot_calibration_ids`** defaults to each follower’s `id`; the **first** follower’s observation drives the mesh / point-cloud visualization returned as **`robot_pcd`** and **`robot_link_pcds`**. Robot mesh points are sampled once at startup and then transformed by FK every step.
 
 **Minimal** (same behavior as the CLI defaults, but from your own file): call **`step()`** each tick for **`datapoints`**, **`scene_pcd`**, **`robot_pcd`**, and **`robot_link_pcds`**. `datapoints` contains the raw per-camera color/depth data used for fusion. `scene_pcd` is the full Open3D point cloud, so you can read both `np.asarray(scene_pcd.points)` and `np.asarray(scene_pcd.colors)`. `robot_pcd` is an **`(M, 3)`** **`float64`** array, and `robot_link_pcds` is a **`dict[str, np.ndarray]`** keyed by URDF link name. You can pass optional image masks into `step(masks_by_serial=...)`; nonzero / `True` pixels are kept. Call **`close()`** when `viewer.quit` is set.
 

@@ -1,5 +1,3 @@
-import foxglove
-import logging
 import os
 import json
 import shutil
@@ -13,85 +11,19 @@ import numpy as np
 import imageio
 import cv2
 
-import foxglove
-from foxglove.schemas import FrameTransforms
-from foxglove.schemas import PointCloud, PackedElementField, PackedElementFieldNumericType
 from lerobot.robots.so101_follower import SO101FollowerConfig, SO101Follower
 from lerobot_playground.teleop_config import TeleopSystemConfig
 from lerobot_playground.paths import CALIBRATION_DIR
 from lerobot_playground.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
-from lerobot_playground.point_clouds.point_cloud_viewer import LivePointCloudViewer
+from lerobot_playground.point_clouds.viser_viewer import ViserSceneViewer
 from lerobot_playground.point_clouds.robot_state import RobotState
-from lerobot_playground.point_clouds.tuner import StateTuner
-from foxglove.schemas import Pose, Vector3, Quaternion
 
-def foxglove_pointcloud_from_numpy(points: np.ndarray, colors=None):
-
-    N = points.shape[0]
-    assert points.shape[1] == 3
-
-    # Default alpha = 255
-    if colors is None:
-        colors = np.zeros((N, 3), dtype=np.uint8)
-
-    # Ensure uint8
-    colors = colors.astype(np.uint8)
-
-    # Add alpha channel (uint8 = 255)
-    a = np.full((N,1), 255, dtype=np.uint8)
-
-    # Build structured array matching Foxglove's fields
-    structured = np.zeros(N, dtype=[
-        ("x", "float32"),
-        ("y", "float32"),
-        ("z", "float32"),
-        ("b", "uint8"),
-        ("g", "uint8"),
-        ("r", "uint8"),
-        ("a", "uint8"),
-    ])
-
-    structured["x"] = points[:,0]
-    structured["y"] = points[:,1]
-    structured["z"] = points[:,2]
-
-    structured["r"] = colors[:,0]
-    structured["g"] = colors[:,1]
-    structured["b"] = colors[:,2]
-    structured["a"] = 255
-
-    data = structured.tobytes()
-
-    fields = [
-        PackedElementField(name="x", offset=0,  type=PackedElementFieldNumericType.Float32),
-        PackedElementField(name="y", offset=4,  type=PackedElementFieldNumericType.Float32),
-        PackedElementField(name="z", offset=8,  type=PackedElementFieldNumericType.Float32),
-        PackedElementField(name="red", offset=12, type=PackedElementFieldNumericType.Uint8),
-        PackedElementField(name="green", offset=13, type=PackedElementFieldNumericType.Uint8),
-        PackedElementField(name="blue", offset=14, type=PackedElementFieldNumericType.Uint8),
-        PackedElementField(name="alpha", offset=15, type=PackedElementFieldNumericType.Uint8),
-    ]
-
-    identity_pose = Pose(
-        position=Vector3(x=0.0, y=0.0, z=0.0),
-        orientation=Quaternion(x=0.0, y=0.0, z=0.0, w=1.0)
-    )
-
-    return PointCloud(
-        timestamp=None,
-        frame_id="base_link",
-        pose=identity_pose,
-        point_stride=16,
-        fields=fields,
-        data=data
-    )
 
 class SystemStateViewer:
     def __init__(
         self,
         config: TeleopSystemConfig,
     ):
-        self.publish_to_foxglove = config.publish_to_foxglove
         self.action_interpolation_duration_s = config.action_interpolation_duration_s
         self.action_command_hz = config.action_command_hz
         self._action_lock = threading.Lock()
@@ -102,10 +34,8 @@ class SystemStateViewer:
         self._target_actions = None
         self._start_actions = None
         self._target_start_time = 0.0
-        self.pcd_viewer = (
-            LivePointCloudViewer(point_size=config.point_size)
-            if config.display_point_cloud_viewer
-            else None
+        self.viewer = ViserSceneViewer(
+            point_size=config.point_size, port=config.viser_port, controls=config.tune
         )
 
         serials = list(config.realsense_serials)
@@ -129,11 +59,6 @@ class SystemStateViewer:
 
         self.quit=False
 
-        self.state_tuner: StateTuner | None = None
-        if config.tune:
-            self.state_tuner = StateTuner()
-            self.state_tuner.start()
-
         print("Connecting robots...")
         for bot in self.followers:
             bot.connect()
@@ -154,10 +79,7 @@ class SystemStateViewer:
             calibration_dir=config.robot_calibration_dir,
             calibration_path=calibration_path,
         )
-
-        if self.publish_to_foxglove:
-            foxglove.set_log_level(logging.INFO)
-            foxglove.start_server()
+        self.viewer.load_static_meshes(self.robot_state.get_static_meshes())
 
         self.serials = serials
         self.images = {}
@@ -180,7 +102,7 @@ class SystemStateViewer:
         #     robot_pcd: ``(M, 3)`` float64 world points for the sampled follower mesh.
         #     robot_link_pcds: per-link robot point clouds keyed by URDF link name.
 
-        if self.state_tuner is not None and self.state_tuner.quit is True:
+        if self.viewer.quit:
             self.quit = True
 
         if len(actions) != len(self.followers):
@@ -192,11 +114,11 @@ class SystemStateViewer:
         with self._follower_io_lock:
             obs = self.followers[0].get_observation()
 
-        transforms, robot_pcd_np, robot_link_pcds = self.robot_state.get_transforms(obs)
+        robot_pcd_np, robot_link_pcds, link_poses = self.robot_state.get_robot_state(obs)
         datapoints = self.stream.get_datapoints()
 
-        if self.state_tuner is not None and self.state_tuner.capture:
-            self.state_tuner.capture = False
+        if self.viewer.capture:
+            self.viewer.capture = False
 
             calibration_dir = "calibration_files"
 
@@ -226,42 +148,26 @@ class SystemStateViewer:
                 self.depths[datapoint['serial']].append(np.array(datapoint['depth']))
             self.robot_pcds.append(np.array(robot_pcd_np))
 
-        scene_pcd, pcd_list = get_fused_point_cloud(
+        scene_pcd, _ = get_fused_point_cloud(
            datapoints
         )
 
-        st = getattr(self, "state_tuner", None)
-        if st is not None and st.save_subgoal:
-           st.save_subgoal = False
+        if self.viewer.save_subgoal:
+           self.viewer.save_subgoal = False
            self._save_scene_pcd_subgoal(scene_pcd)
 
         scene_pcd_np = np.asarray(scene_pcd.points, dtype=np.float64)
         robot_pcd_np = np.asarray(robot_pcd_np, dtype=np.float64)
 
-        if self.publish_to_foxglove:
-            for idx, pcd in enumerate(pcd_list):
-                pts = np.asarray(pcd.points, dtype=np.float32)
-                cols = np.asarray(np.array(pcd.colors) * 255, dtype=np.uint8) if pcd.has_colors() else None
-                pcd_msg = foxglove_pointcloud_from_numpy(pts, cols)
-                foxglove.log(f"/pcd_{idx}", pcd_msg)
-
-            robot_pcd_msg = foxglove_pointcloud_from_numpy(robot_pcd_np.astype(np.float32, copy=False))
-            foxglove.log("/robot_pcd", robot_pcd_msg)
-            foxglove.log(
-               "/tf",
-               FrameTransforms(transforms=transforms)
-            )
-
-        if self.pcd_viewer is not None:
-            scene_colors = (
-                np.asarray(scene_pcd.colors, dtype=np.float64)
-                if scene_pcd.has_colors()
-                else np.full((scene_pcd_np.shape[0], 3), 0.7, dtype=np.float64)
-            )
-            robot_colors = np.tile(np.array([[1.0, 0.1, 0.1]], dtype=np.float64), (robot_pcd_np.shape[0], 1))
-            viewer_points = np.vstack((scene_pcd_np, robot_pcd_np))
-            viewer_colors = np.vstack((scene_colors, robot_colors))
-            self.pcd_viewer.update(viewer_points, viewer_colors)
+        scene_colors = (
+            np.asarray(scene_pcd.colors, dtype=np.float64)
+            if scene_pcd.has_colors()
+            else None
+        )
+        robot_colors = np.tile(np.array([[1.0, 0.1, 0.1]], dtype=np.float64), (robot_pcd_np.shape[0], 1))
+        self.viewer.update(
+            scene_pcd_np, scene_colors, robot_pcd_np, robot_colors, robot_link_pcds, link_poses
+        )
 
         return datapoints, scene_pcd, robot_pcd_np, robot_link_pcds
 
@@ -435,7 +341,6 @@ class SystemStateViewer:
             with open("intrinsic_calibration.json", "w") as f:
                 json.dump(intrinsics, f, indent=8)
 
-        if self.pcd_viewer is not None:
-            self.pcd_viewer.close()
+        self.viewer.close()
 
         self.stream.stop()

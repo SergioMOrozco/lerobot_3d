@@ -1,4 +1,4 @@
-"""SO101 follower URDF state: FK, Foxglove transforms, and mesh sampling for visualization."""
+"""SO101 follower URDF state: FK and mesh sampling for visualization."""
 from __future__ import annotations
 
 import json
@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 import open3d as o3d
-from foxglove.schemas import FrameTransform, Quaternion, Vector3
 from lerobot.utils.constants import HF_LEROBOT_CALIBRATION, ROBOTS
+from scipy.spatial.transform import Rotation
 from urchin import URDF
 
 from lerobot_playground.paths import CALIBRATION_DIR
@@ -38,8 +38,10 @@ class RobotState:
 
         self.PHYS_RANGES = self.compute_phys_ranges(calib)
 
-        # Cache sampled visual geometry in each link frame. Runtime only applies FK transforms.
+        # Cache sampled visual geometry and full mesh geometry in each link frame.
+        # Runtime only applies FK transforms.
         self.link_visual_points: list[tuple[str, np.ndarray]] = []
+        self.link_visual_meshes: list[tuple[str, np.ndarray, np.ndarray]] = []
         self.load_robot_meshes()
 
     def _resolve_calibration_path(
@@ -104,40 +106,9 @@ class RobotState:
 
         return phys_ranges
 
-    def rot_matrix_to_quat(self, R):
-        """
-        Convert a 3x3 rotation matrix to quaternion [x, y, z, w].
-        """
-        trace = R[0, 0] + R[1, 1] + R[2, 2]
-        if trace > 0:
-            s = 0.5 / np.sqrt(trace + 1.0)
-            w = 0.25 / s
-            x = (R[2, 1] - R[1, 2]) * s
-            y = (R[0, 2] - R[2, 0]) * s
-            z = (R[1, 0] - R[0, 1]) * s
-        else:
-            if (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
-                s = 2.0 * np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
-                w = (R[2, 1] - R[1, 2]) / s
-                x = 0.25 * s
-                y = (R[0, 1] + R[1, 0]) / s
-                z = (R[0, 2] + R[2, 0]) / s
-            elif R[1, 1] > R[2, 2]:
-                s = 2.0 * np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
-                w = (R[0, 2] - R[2, 0]) / s
-                x = (R[0, 1] + R[1, 0]) / s
-                y = 0.25 * s
-                z = (R[1, 2] + R[2, 1]) / s
-            else:
-                s = 2.0 * np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
-                w = (R[1, 0] - R[0, 1]) / s
-                x = (R[0, 2] + R[2, 0]) / s
-                y = (R[1, 2] + R[2, 1]) / s
-                z = 0.25 * s
-        return np.array([x, y, z, w], dtype=np.float64)
-
     def load_robot_meshes(self):
-        """Load meshes and sample visual points once in each link frame."""
+        """Load meshes once in each link frame: full geometry for URDF rendering,
+        plus a 100-point sample for the lightweight point-cloud representation."""
         for link in self.robot_urdf.links:
             for visual in link.visuals:
                 if not hasattr(visual.geometry, "mesh"):
@@ -150,11 +121,18 @@ class RobotState:
                     print(f"[WARN] Empty mesh: {mesh_path}")
                     continue
 
-                pts_mesh = np.asarray(mesh_o3d.sample_points_uniformly(100).points)
-
                 T_vis = visual.origin
                 R_vis = T_vis[:3, :3]
                 t_vis = T_vis[:3, 3]
+
+                verts_mesh = np.asarray(mesh_o3d.vertices)
+                verts_visual = (R_vis @ verts_mesh.T).T + t_vis
+                faces = np.asarray(mesh_o3d.triangles)
+                self.link_visual_meshes.append(
+                    (link.name, verts_visual.astype(np.float64, copy=False), faces)
+                )
+
+                pts_mesh = np.asarray(mesh_o3d.sample_points_uniformly(100).points)
                 pts_visual = (R_vis @ pts_mesh.T).T + t_vis
                 self.link_visual_points.append((link.name, pts_visual.astype(np.float64, copy=False)))
 
@@ -207,48 +185,46 @@ class RobotState:
         )
         return full, per_link
 
+    def get_static_meshes(self):
+        """Local-frame (rest-pose) ``(link_name, mesh_name, vertices, faces)`` per visual mesh.
+
+        Call this once at startup, not per frame. Meant to be mounted under a
+        per-link frame node in the viewer and moved rigidly via that frame's
+        pose (see :func:`get_link_poses`) -- these meshes have tens of thousands
+        of vertices each, so re-transforming and re-uploading them every frame
+        (instead of just moving a frame) is the dominant per-frame cost to avoid.
+        """
+        return [
+            (link_name, f"{link_name}_{i}", verts_visual, faces)
+            for i, (link_name, verts_visual, faces) in enumerate(self.link_visual_meshes)
+        ]
+
+    def get_link_poses(self, fk_poses):
+        """World-frame ``(translation, quaternion_wxyz)`` per link with visual meshes.
+
+        Deliberately cheap: only a 3-vector + quaternion per link, not mesh
+        vertices -- see :func:`get_static_meshes`.
+        """
+        poses = {}
+        for link_name in {name for name, _, _ in self.link_visual_meshes}:
+            T_link = fk_poses[self.robot_urdf.link_map[link_name]]
+            translation = T_link[:3, 3].astype(np.float64, copy=False)
+            quat_xyzw = Rotation.from_matrix(T_link[:3, :3]).as_quat()
+            quat_wxyz = np.array(
+                [quat_xyzw[3], quat_xyzw[0], quat_xyzw[1], quat_xyzw[2]], dtype=np.float64
+            )
+            poses[link_name] = (translation, quat_wxyz)
+        return poses
+
     def get_eef_pos(self, obs):
         joint_positions = self.get_joint_positions(obs)
 
         return self.robot_urdf.link_fk(cfg=joint_positions)[self.robot_urdf.link_map["gripper_frame_link"]]
 
-    def get_transforms(self, obs):
-
-        transforms = []
-
+    def get_robot_state(self, obs):
+        """FK the current observation; return world-frame point clouds and per-link poses."""
         joint_positions = self.convert_lerobot_action_to_radians(obs)
-
-        # Compute forward kinematics with updated joint positions
         fk_poses = self.robot_urdf.link_fk(cfg=joint_positions)
-
-        # World -> Base
-        transforms.append(
-            FrameTransform(
-                parent_frame_id="world",
-                child_frame_id="base",
-                translation=Vector3(x=0.0, y=0.0, z=0.0),
-                rotation=Quaternion(x=0.0, y=0.0, z=0.0, w=1.0),
-            )
-        )
-
-        for joint in self.robot_urdf.joints:
-            parent_link = joint.parent
-            child_link = joint.child
-            T_parent = fk_poses[self.robot_urdf.link_map[parent_link]]
-            T_child = fk_poses[self.robot_urdf.link_map[child_link]]
-
-            # Local transform from parent->child
-            T_local = np.linalg.inv(T_parent) @ T_child
-            trans = T_local[:3, 3]
-            quat = self.rot_matrix_to_quat(T_local[:3, :3])
-            transforms.append(
-                FrameTransform(
-                    parent_frame_id=parent_link,
-                    child_frame_id=child_link,
-                    translation=Vector3(x=float(trans[0]), y=float(trans[1]), z=float(trans[2])),
-                    rotation=Quaternion(x=float(quat[0]), y=float(quat[1]), z=float(quat[2]), w=float(quat[3])),
-                )
-            )
-
         robot_pcd, robot_link_pcds = self.sample_robot_points(fk_poses)
-        return transforms, robot_pcd, robot_link_pcds
+        link_poses = self.get_link_poses(fk_poses)
+        return robot_pcd, robot_link_pcds, link_poses

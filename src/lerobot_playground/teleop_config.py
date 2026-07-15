@@ -90,7 +90,9 @@ class TeleopSystemConfig:
     robot_calibration_paths: tuple[str | Path, ...] | None = None
     """Explicit calibration JSON path per follower; overrides ``robot_calibration_dir``."""
     tune: bool = True
-    point_size: float = 2.0
+    """If true, show the viser GUI's Quit/Capture/Save-subgoal controls."""
+    point_size: float = 0.003
+    """Viser point radius in world-space meters (not pixels)."""
     camera_width: int = 848
     camera_height: int = 480
     camera_fps: int = 60
@@ -98,10 +100,8 @@ class TeleopSystemConfig:
     """Seconds to blend from the current command to a new target. ``0`` disables smoothing."""
     action_command_hz: float = 50.0
     """Follower command loop rate when action interpolation is enabled."""
-    publish_to_foxglove: bool = True
-    """If true, start Foxglove and publish point clouds / transforms."""
-    display_point_cloud_viewer: bool = False
-    """If true, show full scene + robot clouds in the Open3D point cloud viewer."""
+    viser_port: int = 8080
+    """Port for the viser server hosting the scene + robot point clouds and GUI controls."""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "realsense_serials", tuple(self.realsense_serials))
@@ -113,6 +113,8 @@ class TeleopSystemConfig:
             raise ValueError("action_interpolation_duration_s must be >= 0.")
         if self.action_command_hz <= 0:
             raise ValueError("action_command_hz must be positive.")
+        if self.viser_port <= 0:
+            raise ValueError("viser_port must be positive.")
         if self.robot_calibration_ids is None:
             object.__setattr__(self, "robot_calibration_ids", tuple(f.id for f in self.followers))
         else:

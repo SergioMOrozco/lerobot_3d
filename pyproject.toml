@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lerobot-playground"
 version = "0.1.0"
-description = "LeRobot SO101 experiments: multi-camera fusion, teleop + Foxglove viewer, flow IK, SAM fused PCD."
+description = "LeRobot SO101 experiments: multi-camera fusion, teleop + viser viewer, flow IK, SAM fused PCD."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -20,13 +20,13 @@ dependencies = [
     "Pillow>=10.0",
     "lerobot==0.4.2",
     "urchin",
-    "foxglove-sdk",
+    "viser",
     "feetech-servo-sdk"
 ]
 
 [project.optional-dependencies]
 realsense = ["pyrealsense2"]
-viser = ["viser", "trimesh"]
+viser = ["trimesh"]
 sam = [
     "torch>=2.0",
     "transformers>=4.36",
