@@ -60,6 +60,10 @@ viser_port: 8080
 
 ## Performing calibration
 
+<p align="center">
+  <img alt="lerobot_3d calibration" src="./videos/calibration.gif" width="640px">
+</p>
+
 **Robot arm motor calibration** (homing/joint limits) is handled by LeRobot itself, not this repo — run `lerobot-calibrate` for each leader/follower arm. Point `teleop_config.yaml`'s `robot_calibration_dir` / `robot_calibration_ids` / `robot_calibration_paths` at the resulting JSON if it isn't in LeRobot's default location.
 
 **Camera intrinsics** are written automatically to `intrinsic_calibration.json` when `lerobot-teleop` shuts down and that file doesn't already exist.
@@ -79,7 +83,7 @@ viser_port: 8080
    ```bash
    python -m lerobot_3d.icp
    ```
-4. For each camera, an Open3D window opens for manual alignment — **arrows** = XY, **PgUp/PgDn** = Z, **1–6** = rotate about X/Y/Z, **f** = cycle step size, **r** = reset, **Enter** = confirm, **Esc** = abort/revert. ICP then refines the confirmed pose automatically.
+4. For each camera, the viser GUI shows translate/rotate buttons (±X/±Y/±Z), a step-size cycle button, reset, confirm, and abort — nudge the point cloud onto the robot mesh, then **Confirm**. ICP then refines the confirmed pose automatically and shows the result for a second confirm/abort.
 5. The refined `extrinsic_calibration.json` is written back — ready for `lerobot-teleop`.
 
 ## Custom teleop script
