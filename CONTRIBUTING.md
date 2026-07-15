@@ -1,4 +1,4 @@
-# How to contribute to Lerobot 3D
+# How to contribute to LeRobot 3D
 
 Everyone is welcome to contribute, and we value every contribution. Code isn't the only
 way to help — reporting bugs, answering questions, and improving documentation all

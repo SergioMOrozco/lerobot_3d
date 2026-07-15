@@ -1,8 +1,8 @@
 <p align="center">
-  <img alt="Lerobot 3D" src="./videos/lerobot_3d_thumbnail.png" width="80%">
+  <img alt="LeRobot 3D" src="./videos/lerobot_3d_thumbnail.png" width="80%">
 </p>
 
-# Lerobot 3D
+# LeRobot 3D
 
 A 3D-grounded SO101 teleoperation stack: multiple RealSense cameras fused into one live scene point cloud, the robot's own URDF tracked alongside it via forward kinematics, and camera-to-robot calibration solved with ICP against that same mesh — all driven from one browser session via [viser](https://viser.studio/).
 
@@ -15,7 +15,7 @@ A 3D-grounded SO101 teleoperation stack: multiple RealSense cameras fused into o
   <img alt="lerobot_3d overview" src="./videos/overview.gif" width="640px">
 </p>
 
-## Why `Lerobot 3D`?
+## Why `LeRobot 3D`?
 
 Robots operate in 3D, but most accessible robot learning and teleoperation pipelines still primarily operate on 2D camera observations. For many tasks, we care about the geometry of the scene relative to the robot: where objects are, what is reachable, what is occluded, and where collisions may occur.
 
@@ -137,6 +137,21 @@ if __name__ == "__main__":
 `step()` also takes an optional `masks_by_serial` (a `{serial: mask}` dict or a list aligned with `realsense_serials`; nonzero/`True` pixels are kept) to mask the fused point cloud per camera.
 
 For a fully custom stack (different robot type, no `TeleopPointCloudSystem`), build directly on **`SO101Leader`**/**`SO101Follower`** from LeRobot and **`SystemStateViewer`** in `lerobot_3d.point_clouds.system_vis`, passing a `TeleopSystemConfig` and calling `update(*actions)` with one dict per follower each tick.
+
+## Citation
+
+If you use `lerobot_3d` in your work, please cite the repository:
+
+```bibtex
+@misc{orozco2025lerobot3d,
+    author = {Orozco, Sergio},
+    title = {LeRobot 3D},
+    howpublished = "\url{https://github.com/SergioMOrozco/lerobot_3d}",
+    year = {2025}
+}
+```
+
+This project builds on [LeRobot](https://github.com/huggingface/lerobot); consider citing it too.
 
 ## Contributing
 
