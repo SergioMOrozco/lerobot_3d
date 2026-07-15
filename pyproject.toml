@@ -41,6 +41,7 @@ dependencies = [
 
 [project.optional-dependencies]
 realsense = ["pyrealsense2"]
+test = ["pytest>=7.4", "pytest-cov>=4.1"]
 
 [project.urls]
 Homepage = "https://github.com/SergioMOrozco/lerobot_3d"
@@ -58,3 +59,12 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 lerobot_3d = ["calibration/**/*"]
+
+[tool.pytest.ini_options]
+minversion = "7.0"
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "pure: tests requiring only stdlib + PyYAML, always runnable",
+    "hardware_stack: needs open3d/urchin/scipy/lerobot/viser installed, no physical hardware",
+]
