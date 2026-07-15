@@ -1,10 +1,26 @@
+<p align="center">
+  <img alt="Lerobot 3D" src="./videos/lerobot_3d_thumbnail.png" width="30%">
+</p>
+
 # Lerobot 3D
 
-SO101 multi-camera teleop with live fused point clouds, a viser-based 3D viewer, and calibration tooling.
+A 3D-grounded SO101 teleoperation stack: multiple RealSense cameras fused into one live scene point cloud, the robot's own URDF tracked alongside it via forward kinematics, and camera-to-robot calibration solved with ICP against that same mesh — all driven from one browser session via [viser](https://viser.studio/).
+
+- **Teleop** — N SO101 leader→follower pairs, one or more RealSense cameras fused into a single scene point cloud per frame, config-driven (`teleop_config.yaml`), no code changes needed.
+- **3D viewer** — a viser browser UI rendering the fused scene, the full robot point cloud, and a per-link breakdown, all updating live, plus GUI buttons for capture/save-subgoal/quit.
+- **Calibration** — camera extrinsics solved by manually aligning (viser buttons, not keyboard shortcuts) a masked robot point cloud onto the robot's own URDF mesh, then refined with multi-scale ICP; intrinsics and robot arm motor calibration are handled alongside.
+- **Extensible** — a small Python API (`TeleopSystemConfig`, `TeleopPointCloudSystem`, `SystemStateViewer`) for building custom capture/recording scripts on top.
 
 <p align="center">
   <img alt="lerobot_3d overview" src="./videos/overview.gif" width="640px">
 </p>
+
+## Why `Lerobot 3D`?
+
+Robots operate in 3D, but most accessible robot learning and teleoperation pipelines still primarily operate on 2D camera observations. For many tasks, we care about the geometry of the scene relative to the robot: where objects are, what is reachable, what is occluded, and where collisions may occur.
+
+`lerobot_3d` makes this 3D grounding a first-class part of the LeRobot stack. It aligns multiple depth cameras with the robot, fuses their observations into a shared 3D point cloud, and tracks the robot's URDF geometry in the same coordinate frame. The goal is to provide a simple, reusable foundation for 3D-aware robot learning instead of rebuilding camera calibration and 3D visualization infrastructure for every project.
+
 
 ## Install
 
@@ -79,12 +95,13 @@ viser_port: 8080
    }
    ```
 2. Run `lerobot-teleop`, position the robot arm in view of the camera(s) you're calibrating, and click **Capture** in the viser GUI. This writes `calibration_files/<serial>/{color.png,depth.npz}` per camera and `calibration_files/robot_pcd.npz` (the robot mesh point cloud at that pose).
-3. From the same directory (containing `calibration_files/`, `extrinsic_calibration.json`, `intrinsic_calibration.json`), run:
+3. **Segment the robot** in each `calibration_files/<serial>/color.png` and save the result as `calibration_files/<serial>/mask.png` in the same directory — `icp.py` reads its **alpha channel** as the mask (opaque = robot, transparent = background) and zeroes out depth outside it before aligning. We use [Segment Anything (web)](https://huggingface.co/spaces/Xenova/segment-anything-web): upload `color.png`, click on the robot to select it, and export/download the cutout as `mask.png` — its default transparent-background export already matches the alpha convention `icp.py` expects. A camera without a `mask.png` is skipped (see `discover_calibration_serials`, which requires both `depth.npz` and `mask.png`).
+4. From the same directory (containing `calibration_files/`, `extrinsic_calibration.json`, `intrinsic_calibration.json`), run:
    ```bash
    python -m lerobot_3d.icp
    ```
-4. For each camera, the viser GUI shows translate/rotate buttons (±X/±Y/±Z), a step-size cycle button, reset, confirm, and abort — nudge the point cloud onto the robot mesh, then **Confirm**. ICP then refines the confirmed pose automatically and shows the result for a second confirm/abort.
-5. The refined `extrinsic_calibration.json` is written back — ready for `lerobot-teleop`.
+5. For each camera, the viser GUI shows translate/rotate buttons (±X/±Y/±Z), a step-size cycle button, reset, confirm, and abort — nudge the point cloud onto the robot mesh, then **Confirm**. ICP then refines the confirmed pose automatically and shows the result for a second confirm/abort.
+6. The refined `extrinsic_calibration.json` is written back — ready for `lerobot-teleop`.
 
 ## Custom teleop script
 
