@@ -1,6 +1,10 @@
-# lerobot_3d
+# Lerobot 3D
 
 SO101 multi-camera teleop with live fused point clouds, a viser-based 3D viewer, and calibration tooling.
+
+<p align="center">
+  <img alt="lerobot_3d overview" src="./videos/overview.gif" width="640px">
+</p>
 
 ## Install
 
