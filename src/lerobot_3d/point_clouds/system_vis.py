@@ -130,7 +130,7 @@ class SystemStateViewer:
 
             for datapoint in datapoints:
 
-                serial_dir = os.path.join(calibration_dir, datapoint['serial'])
+                serial_dir = os.path.join(calibration_dir, datapoint.serial)
 
                 # remove task directory if it exists
                 if os.path.exists(serial_dir):
@@ -138,14 +138,14 @@ class SystemStateViewer:
 
                 os.makedirs(serial_dir)
 
-                cv2.imwrite(os.path.join(serial_dir, "color.png"), datapoint['color'])
-                np.savez_compressed(os.path.join(serial_dir, "depth.npz"), depth=np.array(datapoint['depth']))
+                cv2.imwrite(os.path.join(serial_dir, "color.png"), datapoint.color)
+                np.savez_compressed(os.path.join(serial_dir, "depth.npz"), depth=np.array(datapoint.depth))
             np.savez_compressed(os.path.join(calibration_dir, "robot_pcd.npz"), pcd=np.array(robot_pcd_np))
 
         if self.record:
             for datapoint in datapoints:
-                self.images[datapoint['serial']].append(np.array(datapoint['color']))
-                self.depths[datapoint['serial']].append(np.array(datapoint['depth']))
+                self.images[datapoint.serial].append(np.array(datapoint.color))
+                self.depths[datapoint.serial].append(np.array(datapoint.depth))
             self.robot_pcds.append(np.array(robot_pcd_np))
 
         scene_pcd, _ = get_fused_point_cloud(
@@ -245,7 +245,7 @@ class SystemStateViewer:
             return
 
         if isinstance(masks_by_serial, Mapping):
-            masks = [masks_by_serial.get(datapoint["serial"]) for datapoint in datapoints]
+            masks = [masks_by_serial.get(datapoint.serial) for datapoint in datapoints]
         elif isinstance(masks_by_serial, Sequence) and not isinstance(masks_by_serial, (str, bytes)):
             if len(masks_by_serial) != len(datapoints):
                 raise ValueError(
@@ -257,15 +257,15 @@ class SystemStateViewer:
 
         for datapoint, mask in zip(datapoints, masks):
             if mask is None:
-                datapoint["obj_mask"] = None
+                datapoint.obj_mask = None
                 continue
             mask_np = np.asarray(mask)
-            if mask_np.shape[:2] != datapoint["depth"].shape[:2]:
+            if mask_np.shape[:2] != datapoint.depth.shape[:2]:
                 raise ValueError(
-                    f"Mask for camera {datapoint['serial']} has shape {mask_np.shape}; "
-                    f"expected {datapoint['depth'].shape[:2]}"
+                    f"Mask for camera {datapoint.serial} has shape {mask_np.shape}; "
+                    f"expected {datapoint.depth.shape[:2]}"
                 )
-            datapoint["obj_mask"] = mask_np
+            datapoint.obj_mask = mask_np
 
 
     def _save_scene_pcd_subgoal(self, scene_pcd: o3d.geometry.PointCloud) -> None:
@@ -328,15 +328,15 @@ class SystemStateViewer:
             intrinsics = {}
             for datapoint in datapoints:
 
-                intr = datapoint["color_intrinsics"]
+                intr = datapoint.color_intrinsics
 
-                intrinsics[datapoint['serial']] = {}
-                intrinsics[datapoint['serial']]['fl_x'] = intr.fx
-                intrinsics[datapoint['serial']]['fl_y'] = intr.fy
-                intrinsics[datapoint['serial']]['cx'] = intr.ppx
-                intrinsics[datapoint['serial']]['cy'] = intr.ppy
-                intrinsics[datapoint['serial']]['w'] = datapoint['color'].shape[1]
-                intrinsics[datapoint['serial']]['h'] = datapoint['color'].shape[0]
+                intrinsics[datapoint.serial] = {}
+                intrinsics[datapoint.serial]['fl_x'] = intr.fx
+                intrinsics[datapoint.serial]['fl_y'] = intr.fy
+                intrinsics[datapoint.serial]['cx'] = intr.ppx
+                intrinsics[datapoint.serial]['cy'] = intr.ppy
+                intrinsics[datapoint.serial]['w'] = datapoint.color.shape[1]
+                intrinsics[datapoint.serial]['h'] = datapoint.color.shape[0]
 
             with open("intrinsic_calibration.json", "w") as f:
                 json.dump(intrinsics, f, indent=8)

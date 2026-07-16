@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import pyrealsense2 as rs
 import numpy as np
-import cv2
 import json
 import open3d as o3d
 
+from lerobot_3d.common.types import Datapoint
 from lerobot_3d.paths import resolve_extrinsic_calibration_json
 from lerobot_3d.point_clouds.point_cloud_viewer import LivePointCloudViewer
 
@@ -12,9 +14,7 @@ def get_fused_point_cloud(datapoints):
     """Fuse per-camera depth (and optional color) into one world-frame point cloud.
 
     Args:
-        datapoints: List of dicts per camera with ``depth``, ``color_intrinsics``,
-            ``depth_scale``, ``max_depth`` (depth-only path), ``X_WC`` (4x4 world
-            from camera), optional ``color``, optional ``obj_mask``.
+        datapoints: List of :class:`Datapoint`.
 
     Returns:
         (merged_pc, pc_list): One merge at the end; per-camera clouds stay consistent
@@ -24,13 +24,13 @@ def get_fused_point_cloud(datapoints):
     pc_list = []
     for datapoint in datapoints:
 
-        depth = datapoint["depth"].copy()
+        depth = datapoint.depth.copy()
         depth = np.ascontiguousarray(depth.astype(np.float32))
 
-        if datapoint["obj_mask"] is not None:
-            depth[datapoint["obj_mask"] == 0] = 0.0
+        if datapoint.obj_mask is not None:
+            depth[datapoint.obj_mask == 0] = 0.0
 
-        intr = datapoint["color_intrinsics"]  # added by your stream class
+        intr = datapoint.color_intrinsics  # added by your stream class
 
         fl_x = intr.fx
         fl_y = intr.fy
@@ -44,9 +44,9 @@ def get_fused_point_cloud(datapoints):
         intrinsics = o3d.camera.PinholeCameraIntrinsic(w, h, fl_x, fl_y, cx, cy)
         depth_image = o3d.geometry.Image(depth)
 
-        if datapoint["color"] is not None:
+        if datapoint.color is not None:
 
-            color_arr = datapoint["color"]
+            color_arr = datapoint.color
 
             if color_arr.dtype == np.float32:
                 img_uint8 = np.ascontiguousarray(np.array(color_arr * 255, dtype=np.uint8))
@@ -59,8 +59,8 @@ def get_fused_point_cloud(datapoints):
             rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
                 color_image,
                 depth_image,
-                depth_scale=1.0 / datapoint["depth_scale"],
-                depth_trunc=datapoint["max_depth"],
+                depth_scale=1.0 / datapoint.depth_scale,
+                depth_trunc=datapoint.max_depth,
                 convert_rgb_to_intensity=False,
             )
             pointcloud = o3d.geometry.PointCloud.create_from_rgbd_image(
@@ -71,7 +71,7 @@ def get_fused_point_cloud(datapoints):
         else:
             raise ValueError("Color is required for RGBD fusion.")
 
-        pointcloud.transform(datapoint["X_WC"])
+        pointcloud.transform(datapoint.X_WC)
 
         pc_list.append(pointcloud)
 
@@ -143,14 +143,8 @@ class MultiRealSenseStream:
 
         self.extrinsics = extrinsics
 
-    def get_datapoints(self):
-        """
-        Returns:
-            dict[serial] = {
-                "color": np.ndarray(H,W,3),
-                "depth": np.ndarray(H,W)
-            }
-        """
+    def get_datapoints(self) -> list[Datapoint]:
+        """Returns one :class:`Datapoint` per camera."""
         datapoints = []
 
         for serial, pipeline in self.pipelines.items():
@@ -168,25 +162,19 @@ class MultiRealSenseStream:
             color = np.asanyarray(color_frame.get_data())
             aligned_depth = np.asanyarray(aligned_depth_frame.get_data())
 
-            depth_colormap = cv2.applyColorMap(
-                cv2.convertScaleAbs(aligned_depth, alpha=0.03), cv2.COLORMAP_TURBO
-            )
-
             # Get depth scale from sensor
             depth_sensor = pipeline.get_active_profile().get_device().first_depth_sensor()
             depth_scale = depth_sensor.get_depth_scale()
 
-            datapoints.append({
-                "serial": serial,
-                "color": color,
-                "depth": aligned_depth,
-                "depth_colormap": depth_colormap,
-                "depth_scale": depth_scale,
-                "max_depth": 10.0,
-                "X_WC": self.extrinsics[serial]["X_WC"],
-                "color_intrinsics": color_intrinsics,
-                "obj_mask": None
-            })
+            datapoints.append(Datapoint(
+                serial=serial,
+                color=color,
+                depth=aligned_depth,
+                depth_scale=depth_scale,
+                max_depth=10.0,
+                X_WC=self.extrinsics[serial]["X_WC"],
+                color_intrinsics=color_intrinsics,
+            ))
 
         return datapoints
 

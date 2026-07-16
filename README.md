@@ -107,7 +107,7 @@ viser_port: 8080
 
 Build a **`TeleopSystemConfig`** (`lerobot_3d.teleop_config`) with **`SO101AxisConfig`** entries for each **leader** and **follower** (`port` + LeRobot `id`), **`realsense_serials`**, and any optional fields you need (`urdf_path`, `robot_calibration_ids`, `camera_width`, `camera_height`, `camera_fps`, `tune`, `viser_port`). `len(leaders)` must equal `len(followers)`. `robot_calibration_ids` defaults to each follower's `id`; the **first** follower's observation drives the mesh/point-cloud visualization returned as `robot_pcd`/`robot_link_pcds`.
 
-Call `step()` each tick for `datapoints` (raw per-camera color/depth), `scene_pcd` (Open3D point cloud — `np.asarray(scene_pcd.points)`/`.colors`), `robot_pcd` (`(M, 3)` `float64`), and `robot_link_pcds` (`dict[str, np.ndarray]` keyed by URDF link name). Call `close()` when `system.viewer.quit` is set:
+Call `step()` each tick for `datapoints` (`list[Datapoint]`, one per camera — `.color`/`.depth`/`.color_intrinsics`/`.X_WC` etc., see `lerobot_3d.common.types.Datapoint`), `scene_pcd` (Open3D point cloud — `np.asarray(scene_pcd.points)`/`.colors`), `robot_pcd` (`(M, 3)` `float64`), and `robot_link_pcds` (`dict[str, np.ndarray]` keyed by URDF link name). Call `close()` when `system.viewer.quit` is set:
 
 ```python
 import time

@@ -11,6 +11,7 @@ pytest.importorskip("lerobot")
 pytest.importorskip("viser")
 pytest.importorskip("pyrealsense2")
 
+from lerobot_3d.common.types import Datapoint
 from lerobot_3d.point_clouds.system_vis import SystemStateViewer
 
 pytestmark = pytest.mark.hardware_stack
@@ -21,7 +22,15 @@ def _bare_viewer() -> SystemStateViewer:
 
 
 def _datapoint(serial, depth_shape=(2, 2)):
-    return {"serial": serial, "depth": np.zeros(depth_shape)}
+    return Datapoint(
+        serial=serial,
+        color=None,
+        depth=np.zeros(depth_shape),
+        depth_scale=1.0,
+        max_depth=10.0,
+        X_WC=None,
+        color_intrinsics=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -131,7 +140,7 @@ def test_apply_masks_none_is_noop():
 
     viewer._apply_masks(datapoints, None)
 
-    assert "obj_mask" not in datapoints[0]
+    assert datapoints[0].obj_mask is None
 
 
 def test_apply_masks_mapping():
@@ -141,8 +150,8 @@ def test_apply_masks_mapping():
 
     viewer._apply_masks(datapoints, {"s1": mask})
 
-    assert np.array_equal(datapoints[0]["obj_mask"], mask)
-    assert datapoints[1]["obj_mask"] is None
+    assert np.array_equal(datapoints[0].obj_mask, mask)
+    assert datapoints[1].obj_mask is None
 
 
 def test_apply_masks_sequence():
@@ -153,8 +162,8 @@ def test_apply_masks_sequence():
 
     viewer._apply_masks(datapoints, [mask0, mask1])
 
-    assert np.array_equal(datapoints[0]["obj_mask"], mask0)
-    assert np.array_equal(datapoints[1]["obj_mask"], mask1)
+    assert np.array_equal(datapoints[0].obj_mask, mask0)
+    assert np.array_equal(datapoints[1].obj_mask, mask1)
 
 
 def test_apply_masks_sequence_length_mismatch_raises():
