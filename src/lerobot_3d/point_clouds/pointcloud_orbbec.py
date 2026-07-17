@@ -1,19 +1,19 @@
 """
-pointcloud_orbbec.py
+pointcloud_orbbec_final.py
 
-Orbbec Femto Bolt - RGB-D point cloud viewer for the lerobot_3d pipeline.
-Analogous to camera_stream.py (RealSense version) but adapted for the
-Orbbec Femto Bolt camera using pyorbbecsdk2.
+Orbbec Femto Bolt - RGB-D point cloud viewer
+Combines correct intrinsics from old script with
+threading from new script.
 
-Key differences from RealSense version:
-- Single camera (vs multi RealSense)
-- MJPG color stream requires cv2.imdecode instead of direct array cast
-- D2C hardware alignment via AlignFilter (vs rs.align)
-- Frame buffer + capture thread to handle depth(15fps)/color(30fps) mismatch
-- Color intrinsics read from SDK at native resolution, not hardcoded
-- X_WC set to identity — replace with calibrated extrinsic when available
+Key design decisions:
+- D2C alignment: depth reprojected into color camera frame
+- Color intrinsics scaled from NATIVE 1920x1080 to working res
+  (NOT from profile.get_width() which returns native, not requested)
+- Frame buffer + capture thread: decouples capture from display
+- MJPG spike frames dropped to reduce shadow artifact
+- Working resolution: 1280x720
 
-Hardware: Orbbec Femto Bolt, USB 3.0+
+Hardware: Orbbec Femto Bolt, Windows laptop, USB 3.2
 Author: Gabriel Piris
 Date: 7/17/2026
 
@@ -21,8 +21,6 @@ Controls:
     s - save point cloud as .ply file
     q - quit
 """
-
-from __future__ import annotations
 
 from pyorbbecsdk import (
     Pipeline, Config, OBSensorType, OBFormat,
@@ -35,24 +33,31 @@ import threading
 import time
 
 
-# --- Stream configuration ---
+# --- Configuration ---
 DEPTH_WIDTH = 640
 DEPTH_HEIGHT = 576
 DEPTH_FPS = 15
 
+# Color stream requested resolution
 COLOR_WIDTH = 1280
 COLOR_HEIGHT = 720
 COLOR_FPS = 30
 
+# Native color sensor resolution — used for intrinsics scaling
+# Do NOT change this — it's a hardware constant for the Femto Bolt
+#COLOR_NATIVE_WIDTH = 1920
+#COLOR_NATIVE_HEIGHT = 1080
+
+# Point cloud working resolution — matches color stream
 WORK_WIDTH = COLOR_WIDTH
 WORK_HEIGHT = COLOR_HEIGHT
 
 DEPTH_MIN_MM = 100
 DEPTH_MAX_MM = 5000
-UPDATE_EVERY_N_FRAMES = 10
+UPDATE_EVERY_N_FRAMES = 5
 
-# Drop color frames that take longer than this to decode.
-# Prevents shadow artifact from MJPG decode spikes on Windows.
+# Drop color frames that take longer than this to decode
+# Prevents shadow artifact from MJPG decode spikes
 MAX_DECODE_MS = 25
 
 
@@ -157,14 +162,13 @@ def get_depth_colormap(depth_data):
     return colormap
 
 
-def get_fused_point_cloud(depth_mm, color_rgb, intr):
+def get_point_cloud(depth_mm, color_rgb, intr):
     """
-    Fuse depth and color into one camera-frame point cloud.
-    Analogous to get_fused_point_cloud() in camera_stream.py
-    (RealSense version) but for a single Orbbec camera.
+    Generate colored point cloud via Open3D RGBD pipeline.
+    Matches lerobot_3d architecture for future compatibility.
 
-    After D2C alignment, depth is in the color camera frame.
-    Must use color intrinsics scaled to working resolution.
+    After D2C alignment, depth is in color camera frame.
+    Must use color intrinsics (scaled to working resolution).
 
     Args:
         depth_mm: HxW float32 depth in millimeters
@@ -214,7 +218,7 @@ def capture_loop(pipeline, align_filter, frame_buffer, stop_event):
     Runs in background thread.
     Captures frames continuously and updates the buffer.
     Drops color frames with MJPG decode spikes > MAX_DECODE_MS
-    to reduce shadow artifact on Windows.
+    to reduce shadow artifact.
     """
     while not stop_event.is_set():
         try:
@@ -251,6 +255,7 @@ def capture_loop(pipeline, align_filter, frame_buffer, stop_event):
                 decode_ms = 1000 * (time.perf_counter() - t0)
 
                 if decode_ms > MAX_DECODE_MS:
+                    # Spike frame — keep previous color, don't update
                     frame_buffer.increment_dropped()
                 elif color_bgr is not None:
                     frame_buffer.update_color(color_bgr)
@@ -262,10 +267,10 @@ def capture_loop(pipeline, align_filter, frame_buffer, stop_event):
 
 
 def main():
-    # --- Pipeline setup ---
     pipeline = Pipeline()
     config = Config()
 
+    # --- Depth stream ---
     try:
         depth_profiles = pipeline.get_stream_profile_list(
             OBSensorType.DEPTH_SENSOR
@@ -279,6 +284,10 @@ def main():
         print(f"Depth setup error: {e}")
         return
 
+    # --- Color stream ---
+    # Request COLOR_WIDTH x COLOR_HEIGHT explicitly
+    # Do NOT use get_width()/get_height() after this —
+    # they return native resolution (1920x1080), not requested res
     try:
         color_profiles = pipeline.get_stream_profile_list(
             OBSensorType.COLOR_SENSOR
@@ -295,40 +304,55 @@ def main():
     pipeline.start(config)
 
     # --- Intrinsics ---
-    # Color intrinsics are read at native resolution from the SDK.
-    # Scale to working resolution for point cloud generation.
-    # Note: do not use profile.get_width()/get_height() — these
-    # return the native sensor resolution regardless of what was requested.
     camera_param = pipeline.get_camera_param()
     depth_intr = camera_param.depth_intrinsic
     color_intr = camera_param.rgb_intrinsic
 
-    print(f"\nDepth intrinsics ({depth_intr.width}x{depth_intr.height}):")
+    print(f"\nDepth intrinsics (native {depth_intr.width}x{depth_intr.height}):")
     print(f"  fx={depth_intr.fx:.2f}  fy={depth_intr.fy:.2f}")
     print(f"  cx={depth_intr.cx:.2f}  cy={depth_intr.cy:.2f}")
 
-    print(f"\nColor intrinsics ({color_intr.width}x{color_intr.height}):")
+    print(f"\nColor intrinsics (native {color_intr.width}x{color_intr.height}):")
     print(f"  fx={color_intr.fx:.2f}  fy={color_intr.fy:.2f}")
     print(f"  cx={color_intr.cx:.2f}  cy={color_intr.cy:.2f}")
 
+    # Scale color intrinsics from NATIVE resolution to working res
+    # CRITICAL: use COLOR_NATIVE_WIDTH/HEIGHT (1920x1080), not
+    # profile.get_width() which returns native regardless of request
+    color_native_w = color_intr.width
+    color_native_h = color_intr.height
+    print(f"Color native resolution from SDK: {color_native_w}x{color_native_h}")
+
     work_intr = scale_intrinsics(
         color_intr,
-        color_intr.width, color_intr.height,
+        color_native_w, color_native_h,
         WORK_WIDTH, WORK_HEIGHT
     )
 
-    print(f"\nWorking intrinsics ({WORK_WIDTH}x{WORK_HEIGHT}):")
+    print(f"\nScaled color intrinsics ({WORK_WIDTH}x{WORK_HEIGHT}):")
     print(f"  fx={work_intr['fx']:.2f}  fy={work_intr['fy']:.2f}")
     print(f"  cx={work_intr['cx']:.2f}  cy={work_intr['cy']:.2f}")
 
-    # --- D2C alignment ---
-    # Reprojects depth into color camera frame using calibrated
-    # baseline offset. Eliminates black edge artifacts from naive resize.
+    # Sanity check — cx and cy should be near image center
+    cx_expected = WORK_WIDTH / 2
+    cy_expected = WORK_HEIGHT / 2
+    cx_ok = abs(work_intr["cx"] - cx_expected) < cx_expected * 0.2
+    cy_ok = abs(work_intr["cy"] - cy_expected) < cy_expected * 0.2
+    if not cx_ok or not cy_ok:
+        print(f"\nWARNING: Principal point looks off.")
+        print(f"  Expected cx~{cx_expected:.0f}, got {work_intr['cx']:.1f}")
+        print(f"  Expected cy~{cy_expected:.0f}, got {work_intr['cy']:.1f}")
+        print(f"  Check COLOR_NATIVE_WIDTH/HEIGHT constants.")
+    else:
+        print(f"  Intrinsics sanity check: OK")
+
+    # --- D2C Alignment filter ---
+    print("\nInitializing D2C alignment filter...")
     try:
         align_filter = AlignFilter(
             align_to_stream=OBStreamType.COLOR_STREAM
         )
-        print("\nD2C alignment: ENABLED")
+        print("D2C alignment: ENABLED")
     except Exception as e:
         print(f"AlignFilter unavailable: {e}")
         print("Cannot continue without alignment.")
@@ -345,9 +369,10 @@ def main():
     )
     capture_thread.start()
     print("Capture thread started.")
+    print(f"MJPG spike threshold: {MAX_DECODE_MS}ms")
     print(f"\nControls: s=save  q=quit\n")
 
-    # --- Viewer ---
+    # --- Open3D viewer ---
     vis = o3d.visualization.Visualizer()
     vis.create_window(
         "Femto Bolt - Point Cloud", width=900, height=700
@@ -373,7 +398,7 @@ def main():
 
             display_frame += 1
 
-            # Display windows
+            # --- Display windows ---
             color_display = cv2.resize(color_bgr, (640, 360))
             cv2.imshow("Color Reference", color_display)
 
@@ -392,7 +417,7 @@ def main():
             overlay_display = cv2.resize(overlay, (640, 360))
             cv2.imshow("Alignment Overlay", overlay_display)
 
-            # Point cloud — updated every N frames
+            # --- Point cloud update ---
             if display_frame % UPDATE_EVERY_N_FRAMES == 0:
 
                 depth_work = cv2.resize(
@@ -400,7 +425,9 @@ def main():
                     (WORK_WIDTH, WORK_HEIGHT),
                     interpolation=cv2.INTER_NEAREST
                 )
-                color_work = cv2.resize(color_bgr, (WORK_WIDTH, WORK_HEIGHT))
+                color_work = cv2.resize(
+                    color_bgr, (WORK_WIDTH, WORK_HEIGHT)
+                )
                 color_rgb_work = cv2.cvtColor(
                     color_work, cv2.COLOR_BGR2RGB
                 )
@@ -408,12 +435,12 @@ def main():
                 depth_work[depth_work < DEPTH_MIN_MM] = 0
                 depth_work[depth_work > DEPTH_MAX_MM] = 0
 
-                pcd = get_fused_point_cloud(
+                new_pcd = get_point_cloud(
                     depth_work, color_rgb_work, work_intr
                 )
 
-                pts = np.asarray(pcd.points)
-                cols = np.asarray(pcd.colors)
+                pts = np.asarray(new_pcd.points)
+                cols = np.asarray(new_pcd.colors)
 
                 if len(pts) > 0:
                     pts_mm = pts * 1000.0
@@ -423,7 +450,8 @@ def main():
                         f"{len(pts):,} pts | "
                         f"Z: {pts_mm[:,2].min():.0f}-"
                         f"{pts_mm[:,2].max():.0f}mm | "
-                        f"d={d_count} c={c_count} dropped={dropped}"
+                        f"d={d_count} c={c_count} "
+                        f"dropped={dropped}"
                     )
 
                     pcd_geo.points = o3d.utility.Vector3dVector(pts)
@@ -461,7 +489,8 @@ def main():
         cv2.destroyAllWindows()
         vis.destroy_window()
         d, c, dropped = frame_buffer.get_stats()
-        print(f"\nDone. depth={d} color={c} dropped={dropped} saved={save_count}")
+        print(f"\nDone. depth={d} color={c} "
+              f"dropped={dropped} saved={save_count}")
 
 
 if __name__ == "__main__":
