@@ -79,3 +79,26 @@ def test_viser_applies_base_rotation_and_so101_default_is_identity():
     viewer.update(np.empty((0, 3)), None, [snapshot])
     np.testing.assert_array_equal(frame.position, snapshot.base_offset)
     np.testing.assert_array_equal(frame.wxyz, snapshot.base_wxyz)
+
+
+def test_gripper_target_uses_only_local_gripper_geometry_without_arm_feedback(station):
+    for side, state in station.items():
+        local = state.get_mesh_points({"gripper_open": 0.4}, gripper_only=True)
+        assert local.shape == (30000, 3)
+        assert np.isfinite(local).all()
+        # Independently compose the selected cached visual surfaces at a nonzero
+        # arm pose; the flange-relative target must be identical.
+        observation = {"position_rad": [0.4, 1.3, 1.1, 0.2, -0.3, 0.1], "gripper_open": 0.4}
+        poses = state.robot_urdf.link_fk(cfg=state.get_joint_positions(observation), use_names=True)
+        inv = np.linalg.inv(poses[side + "_gripper"])
+        expected = []
+        for name, points in state._calibration_points:
+            if name in {side + s for s in ("_gripper", "_tip_left", "_tip_right")}:
+                matrix = inv @ poses[name]
+                expected.append(np.einsum("ij,nj->ni", matrix[:3, :3], points) + matrix[:3, 3])
+        np.testing.assert_allclose(local, np.concatenate(expected), atol=1e-10)
+        opened = state.get_mesh_points({"gripper_open": 0.9}, gripper_only=True)
+        np.testing.assert_allclose(local[:10000], opened[:10000])  # fixed housing
+        assert not np.allclose(local[10000:], opened[10000:])  # articulated fingers
+        with pytest.raises(ValueError):
+            state.get_mesh_points({"gripper_open": float("nan")}, gripper_only=True)

@@ -50,6 +50,30 @@ shows a saved pose; live consumers must reject stale feedback themselves.
 URDF base/camera placements are nominal until independently measured. A
 successful render does not validate encoder signs, zero offsets or calibration.
 
+## YAM camera-capture calibration
+
+Export a target for the existing `calibration_files/robot_pcd.npz` interface:
+
+```bash
+python examples/yam_mesh.py --urdf "$YAM_URDF" --side right --gripper-open 0 --output calibration_files/robot_pcd.npz
+# Or: --state pose.json for a full-arm target at saved joint positions.
+python -m lerobot_3d.icp --offline
+```
+
+Run ICP from the prepared session directory. It reads `intrinsic_calibration.json`,
+`extrinsic_calibration.json` and each camera's `color.png`, `depth.npz` and alpha
+`mask.png`. Camera color/depth must share a rectified pinhole grid; saved depth is
+in millimetres. D405 raw-depth registration, ROS capture and wrist-transform
+bookkeeping remain in the acquisition client. `--offline` uses the existing
+alignment/ICP/review sequence and skips the live RealSense preview.
+
+Gripper targets use metres in `<side>_gripper`; their fitted `X_WC` maps camera
+points into that gripper frame, despite the historical key name. Full-arm targets
+use URDF world coordinates; live saved states require
+`stationary_capture_confirmed: true` as an operator assertion, not automatic
+proof of synchronization. Synthetic targets are for offline checks only.
+Validate fitted transforms on separate captures before using them for fusion.
+
 ## Teleop (`lerobot-teleop`)
 
 Drives **N SO101 follower** arms from **N SO101 leader** teleoperators while streaming **one or more Intel RealSense** cameras, fusing depth into a scene point cloud, sampling the first follower's URDF for a robot point cloud, and rendering all of it live in **viser**.

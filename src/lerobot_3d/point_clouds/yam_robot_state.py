@@ -37,6 +37,7 @@ class YamRobotState:
             if i >= 6 and (joint.limit.lower != 0 or joint.limit.upper <= 0):
                 raise ValueError("Expected positive-travel linear_4310 fingers")
         self._meshes, self._points = [], []
+        self._calibration_points = None
         for link in self.robot_urdf.links:
             if not link.name.startswith(side + "_"):
                 continue
@@ -95,4 +96,37 @@ class YamRobotState:
             link_poses=link_poses,
             base_offset=base[:3, 3],
             base_wxyz=tuple(Rotation.from_matrix(base[:3, :3]).as_quat()[[3, 0, 1, 2]]),
+        )
+
+    def get_mesh_points(self, observation, *, gripper_only=False):
+        """Mesh target in URDF world, or just this gripper in its own flange frame.
+
+        Gripper-local calibration needs only ``gripper_open``: arm joint angles
+        cancel between the camera mount and its own gripper. Camera meshes are
+        excluded from this target. Dimensions and finger travel come from URDF.
+        """
+        # Surface alignment needs denser samples than the display cloud.
+        # Sample once so repeated poses use the same target geometry.
+        if self._calibration_points is None:
+            self._calibration_points = [
+                (
+                    name,
+                    trimesh.sample.sample_surface(
+                        trimesh.Trimesh(vertices=vertices, faces=faces, process=False), 10000
+                    )[0],
+                )
+                for name, _, vertices, faces in self._meshes
+            ]
+        if gripper_only:
+            # An arbitrary internal FK reference, never represented as feedback.
+            observation = {"position_rad": np.zeros(6), "gripper_open": observation["gripper_open"]}
+        poses = self.robot_urdf.link_fk(cfg=self.get_joint_positions(observation), use_names=True)
+        reference = np.linalg.inv(poses[self.side + "_gripper"]) if gripper_only else np.eye(4)
+        gripper_links = {self.side + suffix for suffix in ("_gripper", "_tip_left", "_tip_right")}
+        return np.concatenate(
+            [
+                transform_points(reference @ poses[name], points)
+                for name, points in self._calibration_points
+                if not gripper_only or name in gripper_links
+            ]
         )
