@@ -1,11 +1,7 @@
-"""icp.py imports open3d/pyrealsense2/viser at module scope (directly and via
-camera_stream.py/alignment_viewer.py), so reaching even its pure filesystem logic
-requires all three installed. No physical hardware needed.
-"""
+"""Offline ICP utilities need Open3D and Viser, but not a RealSense driver."""
 import pytest
 
 pytest.importorskip("open3d")
-pytest.importorskip("pyrealsense2")
 pytest.importorskip("viser")
 
 from lerobot_3d.icp import discover_calibration_serials

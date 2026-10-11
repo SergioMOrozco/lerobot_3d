@@ -45,3 +45,5 @@ class RobotSnapshot:
     """Per-link ``(translation, quaternion_wxyz)``, robot base frame."""
     base_offset: np.ndarray
     """``(3,)`` position of this robot's base in the viser world (grid layout)."""
+    base_wxyz: tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    """World orientation of the base; identity preserves existing SO101 layouts."""

@@ -30,6 +30,50 @@ pip install -e ".[realsense]"
 
 (`realsense` pulls in `pyrealsense2`, required to stream RealSense cameras.)
 
+## YAM joint poses
+
+`YamRobotState` maps six measured arm angles in radians and a normalized
+`gripper_open` (0 closed, 1 open) to the I2RT YAM v1 / linear_4310 station URDF.
+It uses the URDF base transforms and supplies link poses to the existing Viser
+viewer. It does not read encoders, apply encoder offsets, or command hardware.
+Use I2RT revision `120c3c81400171174604e503943f8d1ebc891058` and its
+`i2rt/robot_models/station/yam_station_linear_4310_d405/yam_station_linear_4310_d405.urdf`.
+
+```bash
+python examples/yam_viser.py --urdf "$YAM_URDF" --state pose.json
+```
+
+The JSON contains `mode` (`live` for saved measurements, or `synthetic`) and
+`arms.left` / `arms.right`, each with `position_rad` (six radians in joint1..6
+order) and `gripper_open`. Finger travel is in metres internally. The example
+shows a saved pose; live consumers must reject stale feedback themselves.
+URDF base/camera placements are nominal until independently measured. A
+successful render does not validate encoder signs, zero offsets or calibration.
+
+## YAM camera-capture calibration
+
+Export a target for the existing `calibration_files/robot_pcd.npz` interface:
+
+```bash
+python examples/yam_mesh.py --urdf "$YAM_URDF" --side right --gripper-open 0 --output calibration_files/robot_pcd.npz
+# Or: --state pose.json for a full-arm target at saved joint positions.
+python -m lerobot_3d.icp --offline
+```
+
+Run ICP from the prepared session directory. It reads `intrinsic_calibration.json`,
+`extrinsic_calibration.json` and each camera's `color.png`, `depth.npz` and alpha
+`mask.png`. Camera color/depth must share a rectified pinhole grid; saved depth is
+in millimetres. D405 raw-depth registration, ROS capture and wrist-transform
+bookkeeping remain in the acquisition client. `--offline` uses the existing
+alignment/ICP/review sequence and skips the live RealSense preview.
+
+Gripper targets use metres in `<side>_gripper`; their fitted `X_WC` maps camera
+points into that gripper frame, despite the historical key name. Full-arm targets
+use URDF world coordinates; live saved states require
+`stationary_capture_confirmed: true` as an operator assertion, not automatic
+proof of synchronization. Synthetic targets are for offline checks only.
+Validate fitted transforms on separate captures before using them for fusion.
+
 ## Teleop (`lerobot-teleop`)
 
 Drives **N SO101 follower** arms from **N SO101 leader** teleoperators while streaming **one or more Intel RealSense** cameras, fusing depth into a scene point cloud, sampling the first follower's URDF for a robot point cloud, and rendering all of it live in **viser**.

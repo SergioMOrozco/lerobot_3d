@@ -3,7 +3,6 @@ from PIL import Image
 import numpy as np
 import json
 import os
-from lerobot_3d.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
 from lerobot_3d.point_clouds.alignment_viewer import AlignmentViewer
 
 
@@ -237,9 +236,20 @@ def main(viewer: AlignmentViewer):
 
 
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Align camera captures to a mesh in Viser.")
+    parser.add_argument("--offline", action="store_true", help="Calibrate saved files without starting cameras")
+    args = parser.parse_args()
+
     viewer = AlignmentViewer()
     try:
         serials = main(viewer)
+
+        if args.offline:
+            raise SystemExit(0)
+
+        from lerobot_3d.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
 
         stream = MultiRealSenseStream(serials, "extrinsic_calibration.json")
         try:
