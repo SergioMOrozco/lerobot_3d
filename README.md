@@ -30,6 +30,26 @@ pip install -e ".[realsense]"
 
 (`realsense` pulls in `pyrealsense2`, required to stream RealSense cameras.)
 
+## YAM joint poses
+
+`YamRobotState` maps six measured arm angles in radians and a normalized
+`gripper_open` (0 closed, 1 open) to the I2RT YAM v1 / linear_4310 station URDF.
+It uses the URDF base transforms and supplies link poses to the existing Viser
+viewer. It does not read encoders, apply encoder offsets, or command hardware.
+Use I2RT revision `120c3c81400171174604e503943f8d1ebc891058` and its
+`i2rt/robot_models/station/yam_station_linear_4310_d405/yam_station_linear_4310_d405.urdf`.
+
+```bash
+python examples/yam_viser.py --urdf "$YAM_URDF" --state pose.json
+```
+
+The JSON contains `mode` (`live` for saved measurements, or `synthetic`) and
+`arms.left` / `arms.right`, each with `position_rad` (six radians in joint1..6
+order) and `gripper_open`. Finger travel is in metres internally. The example
+shows a saved pose; live consumers must reject stale feedback themselves.
+URDF base/camera placements are nominal until independently measured. A
+successful render does not validate encoder signs, zero offsets or calibration.
+
 ## Teleop (`lerobot-teleop`)
 
 Drives **N SO101 follower** arms from **N SO101 leader** teleoperators while streaming **one or more Intel RealSense** cameras, fusing depth into a scene point cloud, sampling the first follower's URDF for a robot point cloud, and rendering all of it live in **viser**.
