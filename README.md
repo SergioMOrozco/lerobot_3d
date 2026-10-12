@@ -30,6 +30,26 @@ pip install -e ".[realsense]"
 
 (`realsense` pulls in `pyrealsense2`, required to stream RealSense cameras.)
 
+## YAM URDF and mesh calibration
+
+`examples/yam_viser.py` renders saved poses from the I2RT YAM v1 / linear_4310
+station URDF and exports mesh targets for the existing calibration workflow.
+Use I2RT revision `120c3c81400171174604e503943f8d1ebc891058` and its
+`i2rt/robot_models/station/yam_station_linear_4310_d405/yam_station_linear_4310_d405.urdf`.
+
+```bash
+python examples/yam_viser.py view --urdf "$YAM_URDF" --state pose.json
+python examples/yam_viser.py export-gripper --urdf "$YAM_URDF" --side left --gripper-open 1 --output calibration_files/robot_pcd.npz
+```
+
+State JSON contains `mode` (`live` or `synthetic`) and `arms.left`/`arms.right`,
+each with six `position_rad` values and `gripper_open` (0 closed, 1 open).
+`export-mesh` uses `--state`/`--output`; measured states additionally require
+`stationary_capture_confirmed: true`. Gripper targets use metres in the named
+gripper frame; the fitted transform is camera-to-gripper. Prepare rectified,
+registered images with depth in millimetres for the existing ICP reader.
+Nominal mounts and synthetic poses are not calibrated transforms or live feedback.
+
 ## Teleop (`lerobot-teleop`)
 
 Drives **N SO101 follower** arms from **N SO101 leader** teleoperators while streaming **one or more Intel RealSense** cameras, fusing depth into a scene point cloud, sampling the first follower's URDF for a robot point cloud, and rendering all of it live in **viser**.

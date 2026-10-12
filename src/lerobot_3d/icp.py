@@ -3,7 +3,6 @@ from PIL import Image
 import numpy as np
 import json
 import os
-from lerobot_3d.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
 from lerobot_3d.point_clouds.alignment_viewer import AlignmentViewer
 
 
@@ -237,6 +236,8 @@ def main(viewer: AlignmentViewer):
 
 
 if __name__ == "__main__":
+    from lerobot_3d.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
+
     viewer = AlignmentViewer()
     try:
         serials = main(viewer)
