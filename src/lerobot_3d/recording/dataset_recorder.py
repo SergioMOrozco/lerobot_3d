@@ -13,6 +13,9 @@ Per-frame schema (``<s>`` = camera serial, ``<link>`` = URDF link name):
 - ``observation.robot_link_pcds.<link>``: float32 ``(N, 3)`` world-frame points; point ``k``
   of a link is the same body point in every frame.
 
+With several robots (e.g. both YAM arms) their joints and links are merged into the same features, in
+robot order; names must be unique across robots (YAM's are prefixed with the arm's side).
+
 Use :mod:`lerobot_3d.recording.dataset_loader` to turn a loaded frame back into
 :class:`~lerobot_3d.common.types.Datapoint` objects.
 """
@@ -26,6 +29,7 @@ import cv2
 import numpy as np
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.constants import HF_LEROBOT_HOME
+from scipy.spatial.transform import Rotation
 
 from lerobot_3d.common.types import Datapoint, RobotSnapshot
 from lerobot_3d.recording.depth_codec import DEPTH_ENCODING, pack_depth
@@ -58,14 +62,48 @@ def intrinsics_matrix(color_intrinsics) -> np.ndarray:
     )
 
 
+def _per_robot(snapshots, actions) -> tuple[list[RobotSnapshot], list[dict[str, float]]]:
+    """Accept one robot's ``(snapshot, action)`` or per-robot lists of them."""
+    if isinstance(snapshots, RobotSnapshot):
+        return [snapshots], [actions]
+    return list(snapshots), list(actions)
+
+
+def _merged(dicts: Sequence[dict], what: str) -> dict:
+    merged = {}
+    for d in dicts:
+        clash = merged.keys() & d.keys()
+        if clash:
+            raise ValueError(f"Duplicate {what} across robots: {sorted(clash)}")
+        merged.update(d)
+    return merged
+
+
+def world_link_pcds(snapshots: Sequence[RobotSnapshot]) -> dict[str, np.ndarray]:
+    """Every robot's link clouds moved from its base frame into the world frame, merged."""
+    per_robot = []
+    for snapshot in snapshots:
+        offset = np.asarray(snapshot.base_offset, dtype=np.float64)
+        if tuple(snapshot.base_wxyz) == (1.0, 0.0, 0.0, 0.0) and not offset.any():
+            per_robot.append(dict(snapshot.link_pcds))  # base frame is the world frame
+            continue
+        w, x, y, z = snapshot.base_wxyz
+        R = Rotation.from_quat([x, y, z, w]).as_matrix()
+        per_robot.append({
+            name: np.asarray(pts, dtype=np.float64) @ R.T + offset for name, pts in snapshot.link_pcds.items()
+        })
+    return _merged(per_robot, "link names")
+
+
 def build_features(
     datapoints: Sequence[Datapoint],
-    snapshot: RobotSnapshot,
-    action: dict[str, float],
+    snapshots: Sequence[RobotSnapshot] | RobotSnapshot,
+    actions: Sequence[dict[str, float]] | dict[str, float],
 ) -> dict:
     """LeRobot feature spec for one step's data (shapes come from the real frames)."""
-    action_names = list(action.keys())
-    state_names = list(snapshot.joint_positions.keys())
+    snapshots, actions = _per_robot(snapshots, actions)
+    action_names = list(_merged(actions, "action names"))
+    state_names = list(_merged([s.joint_positions for s in snapshots], "joint names"))
     features: dict = {
         ACTION_KEY: {"dtype": "float32", "shape": (len(action_names),), "names": action_names},
         STATE_KEY: {"dtype": "float32", "shape": (len(state_names),), "names": state_names},
@@ -78,7 +116,7 @@ def build_features(
         features[f"{DEPTH_SCALE_PREFIX}{s}"] = {"dtype": "float32", "shape": (1,), "names": None}
         features[f"{INTRINSICS_PREFIX}{s}"] = {"dtype": "float32", "shape": (3, 3), "names": None}
         features[f"{EXTRINSICS_PREFIX}{s}"] = {"dtype": "float32", "shape": (4, 4), "names": None}
-    for link_name, pts in snapshot.link_pcds.items():
+    for link_name, pts in world_link_pcds(snapshots).items():
         features[f"{LINK_PCD_PREFIX}{link_name}"] = {
             "dtype": "float32",
             "shape": tuple(np.asarray(pts).shape),
@@ -89,17 +127,20 @@ def build_features(
 
 def build_frame(
     datapoints: Sequence[Datapoint],
-    snapshot: RobotSnapshot,
-    action: dict[str, float],
+    snapshots: Sequence[RobotSnapshot] | RobotSnapshot,
+    actions: Sequence[dict[str, float]] | dict[str, float],
     features: dict,
     task: str,
 ) -> dict:
     """One ``LeRobotDataset.add_frame`` dict, laid out per :func:`build_features`."""
+    snapshots, actions = _per_robot(snapshots, actions)
+    action = _merged(actions, "action names")
+    joint_positions = _merged([s.joint_positions for s in snapshots], "joint names")
     action_names = features[ACTION_KEY]["names"]
     state_names = features[STATE_KEY]["names"]
     frame = {
         ACTION_KEY: np.array([action[k] for k in action_names], dtype=np.float32),
-        STATE_KEY: np.array([snapshot.joint_positions[k] for k in state_names], dtype=np.float32),
+        STATE_KEY: np.array([joint_positions[k] for k in state_names], dtype=np.float32),
         "task": task,
     }
     for dp in datapoints:
@@ -110,7 +151,7 @@ def build_frame(
         frame[f"{DEPTH_SCALE_PREFIX}{s}"] = np.array([dp.depth_scale], dtype=np.float32)
         frame[f"{INTRINSICS_PREFIX}{s}"] = intrinsics_matrix(dp.color_intrinsics)
         frame[f"{EXTRINSICS_PREFIX}{s}"] = np.asarray(dp.X_WC, dtype=np.float32)
-    for link_name, pts in snapshot.link_pcds.items():
+    for link_name, pts in world_link_pcds(snapshots).items():
         frame[f"{LINK_PCD_PREFIX}{link_name}"] = np.asarray(pts, dtype=np.float32)
     return frame
 
@@ -187,15 +228,18 @@ class LeRobotDatasetRecorder:
     def add_frame(
         self,
         datapoints: Sequence[Datapoint],
-        snapshot: RobotSnapshot,
-        action: dict[str, float],
+        snapshots: Sequence[RobotSnapshot] | RobotSnapshot,
+        actions: Sequence[dict[str, float]] | dict[str, float],
     ) -> None:
-        """Buffer one step of the current episode (images are written by background threads)."""
+        """Buffer one step of the current episode (images are written by background threads).
+
+        ``snapshots``/``actions`` are per robot, or a single robot's snapshot and action."""
         if not self.recording:
             raise RuntimeError("Call start_episode() before add_frame().")
-        features = build_features(datapoints, snapshot, action)
-        self._ensure_dataset(features, datapoints, snapshot)
-        self.dataset.add_frame(build_frame(datapoints, snapshot, action, self.features, self.task))
+        snapshots, actions = _per_robot(snapshots, actions)
+        features = build_features(datapoints, snapshots, actions)
+        self._ensure_dataset(features, datapoints, snapshots)
+        self.dataset.add_frame(build_frame(datapoints, snapshots, actions, self.features, self.task))
         self.episode_frames += 1
 
     def stop_episode(self) -> int:
@@ -225,7 +269,7 @@ class LeRobotDatasetRecorder:
         self.dataset.finalize()
         self.dataset.stop_image_writer()
 
-    def _ensure_dataset(self, features, datapoints, snapshot) -> None:
+    def _ensure_dataset(self, features, datapoints, snapshots) -> None:
         if self.dataset is not None:
             if _comparable(features) != _comparable(self.features):
                 raise ValueError(
@@ -245,20 +289,25 @@ class LeRobotDatasetRecorder:
             image_writer_threads=self.image_writer_threads_per_camera * n_cameras,
         )
         self.features = self.dataset.meta.features
-        self._write_sidecar(datapoints, snapshot)
+        self._write_sidecar(datapoints, snapshots)
         print(f"[recorder] Created dataset at {self.root}.")
 
-    def _write_sidecar(self, datapoints, snapshot) -> None:
+    def _write_sidecar(self, datapoints, snapshots) -> None:
+        world_frame = (
+            "YAM station URDF world; robot link clouds and extrinsics (X_WC, camera -> world) are in it"
+            if self.robot_type == "yam_follower"
+            else "robot base (robot 0); extrinsics are X_WC (camera -> world)"
+        )
         sidecar = {
             "format_version": SIDECAR_FORMAT_VERSION,
             "depth_encoding": DEPTH_ENCODING,
             "depth_units": "raw sensor units; meters = depth * observation.depth_scale.<serial>",
             "rgb_channel_order": "rgb",
             "depth_aligned_to": "color",
-            "world_frame": "robot base (robot 0); extrinsics are X_WC (camera -> world)",
+            "world_frame": world_frame,
             "camera_serials": [dp.serial for dp in datapoints],
-            "robot_links": list(snapshot.link_pcds.keys()),
-            "joint_names": list(snapshot.joint_positions.keys()),
+            "robot_links": list(world_link_pcds(snapshots)),
+            "joint_names": list(_merged([s.joint_positions for s in snapshots], "joint names")),
         }
         path = self.root / "meta" / SIDECAR_NAME
         path.parent.mkdir(parents=True, exist_ok=True)

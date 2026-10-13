@@ -1,6 +1,26 @@
 # Full TeleopSystemConfig, as YAML. Edit this file to change hardware wiring or run
 # settings -- no code changes needed. See lerobot_3d.teleop_config for field docs.
 
+# Robot: so101 (SO101 leader/follower arms on USB) or yam (I2RT YAM station arms over ROS 2).
+robot_type: so101
+
+# --- robot_type: yam -- replace leaders/followers/cameras below with, e.g.:
+# leaders: []                     # no YAM teleop yet; the arms are observed, never commanded
+# followers:                      # one entry per arm, 1 or 2
+#   - side: left
+#   - side: right
+# realsense_serials: []
+# ros_cameras:                    # RGB-D cameras on ROS 2 topics (also usable with so101, without link)
+#   - namespace: /camera/top      # no link: fixed in the world, calibrated like a RealSense camera
+#   - namespace: /camera/left_wrist
+#     link: left_camera           # moves with this URDF link (wrist camera)
+#   - namespace: /camera/right_wrist
+#     link: right_camera
+#     # Optional per camera: color_topic, depth_topic, color_info_topic, depth_info_topic (relative to
+#     # namespace). Point depth_topic/depth_info_topic at depth aligned to color to skip registration.
+# ros_joint_topic: /joint_states  # sensor_msgs/JointState with <side>_joint1..6 (rad), <side>_joint7 (m)
+# With followers: [] the YAM arms are shown at the URDF rest pose, no ROS needed.
+
 # leaders/followers must be the same length when both are set (one leader drives one
 # follower, matched by list position). Each of the three lists below may be empty ([]):
 #   leaders: []            -> no teleop; drive the system with system.step(action).
@@ -38,7 +58,7 @@ dataset_root: null
 dataset_task: teleop
 dataset_fps: 15
 
-# null -> bundled so101_new_calib.urdf under the package's calibration/ dir.
+# null -> the bundled URDF for robot_type under the package's calibration/ dir.
 urdf_path: null
 
 # Show the viser GUI's Quit/Capture/Save-subgoal controls.

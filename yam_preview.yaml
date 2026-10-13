@@ -1,0 +1,9 @@
+# YAM preview: both arms drawn at the URDF rest pose (every joint 0, grippers closed).
+# No arms, teleop, cameras or ROS are used.
+#   lerobot-teleop --config yam_preview.yaml
+robot_type: yam
+leaders: []
+followers: []
+realsense_serials: []
+ros_cameras: []
+viser_port: 8080

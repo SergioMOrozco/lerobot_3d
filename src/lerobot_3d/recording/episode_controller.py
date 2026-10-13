@@ -86,9 +86,10 @@ class EpisodeController:
             self.state = EpisodeState.IDLE
             self.print_help()
 
-    def on_step(self, datapoints, snapshot, action) -> None:
+    def on_step(self, datapoints, snapshots, actions) -> None:
+        """Add this step while recording; ``snapshots``/``actions`` are per robot (or one robot's)."""
         if self.state is EpisodeState.RECORDING:
-            self.recorder.add_frame(datapoints, snapshot, action)
+            self.recorder.add_frame(datapoints, snapshots, actions)
             self.num_frames += 1
 
     def close(self) -> None:

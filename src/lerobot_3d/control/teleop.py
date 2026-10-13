@@ -53,6 +53,8 @@ class TeleopPointCloudSystem:
         """Actions used by the most recent :meth:`step` (from the leaders or the caller)."""
 
     def connect(self) -> None:
+        if not self.leaders:
+            return
         print("Connecting devices...")
         for leader in self.leaders:
             leader.connect()
@@ -93,8 +95,17 @@ class TeleopPointCloudSystem:
                 ``joint_positions``, ``joint_radians``, ``pcd``, ``link_pcds``,
                 ``link_poses`` (base frame) and the viser grid ``base_offset``.
 
+        With observe-only YAM followers, omit ``action``: the arms are read, not commanded, and
+        their measured joints become :attr:`last_actions` (what a dataset records as the action).
+
         Poll ``self.viewer.quit`` to know when to stop the outer loop, then call :meth:`close`.
         """
+        if self.viewer.observe_only:
+            if action is not None:
+                raise ValueError("YAM followers are observe-only (no YAM teleop yet); call step() with no action.")
+            result = self.viewer.update(masks_by_serial=masks_by_serial)
+            self.last_actions = [dict(snapshot.joint_positions) for snapshot in result[4]]
+            return result
         if action is not None:
             actions = action
         elif not self.leaders:
@@ -135,7 +146,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_teleop_system_config(args.config)
-    if not config.leaders:
+    if not config.leaders and config.robot_type != "yam":
         parser.exit(
             1,
             "No leaders configured: the CLI loop only teleops from leaders. Drive the system "
@@ -150,6 +161,7 @@ def main() -> None:
                 root=config.dataset_root,
                 fps=config.dataset_fps,
                 task=config.dataset_task,
+                robot_type="yam_follower" if config.robot_type == "yam" else "so101_follower",
             ),
             fps=config.dataset_fps,
             log=status_line.log,
@@ -160,6 +172,10 @@ def main() -> None:
 
     system = TeleopPointCloudSystem(config)
     system.connect()
+    # YAM with no followers: no hardware to read, so show the arms at the URDF rest pose.
+    preview_actions = (
+        system.viewer.rest_actions() if config.robot_type == "yam" and not config.followers else None
+    )
 
     hz = config.dataset_fps if recording else args.hz
     period_s = None if hz is None or hz <= 0 else 1.0 / hz
@@ -170,11 +186,11 @@ def main() -> None:
                 controller.print_help()
             while not system.viewer.quit:
                 t_iter_start = time.monotonic()
-                datapoints, _scene_pcd, _robot_pcds, _robot_link_pcds, snapshots = system.step()
+                datapoints, _scene_pcd, _robot_pcds, _robot_link_pcds, snapshots = system.step(preview_actions)
 
                 if controller is not None:
                     was_recording = controller.state is EpisodeState.RECORDING
-                    controller.on_step(datapoints, snapshots[0], system.last_actions[0])
+                    controller.on_step(datapoints, snapshots, system.last_actions)
                     # Only the step + frame capture set the recorded rate; saving an episode
                     # (video encoding) happens between episodes and is excluded.
                     capture_elapsed = time.monotonic() - t_iter_start

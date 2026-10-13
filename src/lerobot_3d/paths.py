@@ -7,6 +7,8 @@ from pathlib import Path
 # ``lerobot_3d`` package root (directory containing ``calibration/``).
 PACKAGE_ROOT: Path = Path(__file__).resolve().parent
 CALIBRATION_DIR: Path = PACKAGE_ROOT / "calibration"
+# I2RT YAM v1 / linear_4310 station URDF, vendored from i2rt-robotics/i2rt@120c3c8 (MIT).
+YAM_URDF_PATH: Path = CALIBRATION_DIR / "yam" / "yam_station_linear_4310_d405.urdf"
 
 
 def _resolve_repo_file(path: str | Path, *, env_var: str, not_found_msg: str) -> Path:

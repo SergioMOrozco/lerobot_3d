@@ -30,44 +30,9 @@ pip install -e ".[realsense]"
 
 (`realsense` pulls in `pyrealsense2`, required to stream RealSense cameras.)
 
-## YAM URDF and mesh calibration
-
-`examples/yam_viser.py` renders saved poses from the I2RT YAM v1 / linear_4310
-station URDF and exports mesh targets for the existing calibration workflow.
-Use I2RT revision `120c3c81400171174604e503943f8d1ebc891058` and its
-`i2rt/robot_models/station/yam_station_linear_4310_d405/yam_station_linear_4310_d405.urdf`.
-
-```bash
-python examples/yam_viser.py view --urdf "$YAM_URDF" --state pose.json
-python examples/yam_viser.py export-gripper --urdf "$YAM_URDF" --side left --gripper-open 1 --output calibration_files/robot_pcd.npz
-```
-
-State JSON contains `mode` (`live` or `synthetic`) and `arms.left`/`arms.right`,
-each with six `position_rad` values and `gripper_open` (0 closed, 1 open).
-`export-mesh` uses `--state`/`--output`; measured states additionally require
-`stationary_capture_confirmed: true`. Gripper targets use metres in the named
-gripper frame; the fitted transform is camera-to-gripper. Prepare rectified,
-registered images with depth in millimetres for the existing ICP reader.
-Nominal mounts and synthetic poses are not calibrated transforms or live feedback.
-
-### Live YAM viewer (ROS 2)
-
-Read-only live view in viser: measured joints from `/joint_states` (`<side>_joint1..6` rad, optional
-`<side>_joint7` finger travel in m) pose the station URDF, and each wrist camera's image and depth cloud
-are drawn at its URDF camera link (nominal mount until calibrated). Needs `rclpy`.
-
-```bash
-python -m lerobot_3d.point_clouds.yam_live_viewer --urdf "$YAM_URDF"
-```
-
-Each `--camera NAMESPACE=LINK` (default `/camera/left_wrist=left_camera`, `/camera/right_wrist=right_camera`)
-reads `color/image_raw/compressed`, `depth_raw/image_rect_raw/compressedDepth` (lossless PNG), both
-`camera_info` topics, and depth-to-color extrinsics from `/tf_static`. `--stride`, `--max-depth` and
-`--point-size` tune the clouds.
-
 ## Teleop (`lerobot-teleop`)
 
-Drives **N SO101 follower** arms from **N SO101 leader** teleoperators while streaming **one or more Intel RealSense** cameras, fusing depth into a scene point cloud, sampling the first follower's URDF for a robot point cloud, and rendering all of it live in **viser**.
+Drives **N SO101 follower** arms from **N SO101 leader** teleoperators — or observes **one or two I2RT YAM arms** over ROS 2 (see [YAM arms and ROS cameras](#yam-arms-and-ros-cameras)) — while streaming **Intel RealSense** and/or **ROS 2** RGB-D cameras, fusing depth into a scene point cloud, sampling the robot's URDF for a robot point cloud, and rendering all of it live in **viser**.
 
 ```bash
 lerobot-teleop
@@ -111,6 +76,34 @@ viser_port: 8080
 - **No cameras** — no RealSense streams and no extrinsics file needed. The scene point cloud is empty.
 - **No leaders *and* no followers** — `num_robots` virtual robots (default 1), each posed by its own entry in `step([a0, …, aN-1])` and laid out on a grid in viser, `robot_grid_spacing` meters apart (default 0.5). See [Multiple virtual robots](#multiple-virtual-robots).
 
+### YAM arms and ROS cameras
+
+Set `robot_type: yam` to use the I2RT YAM v1 / linear_4310 station instead of SO101 arms:
+
+```yaml
+robot_type: yam
+leaders: []                  # no YAM teleop yet: the arms are observed, never commanded
+followers:                   # one entry per arm, 1 or 2
+  - side: left
+  - side: right
+realsense_serials: []
+ros_cameras:
+  - namespace: /camera/top            # no link: fixed in the world, exactly like a RealSense camera
+  - namespace: /camera/left_wrist
+    link: left_camera                 # moves with this URDF link
+  - namespace: /camera/right_wrist
+    link: right_camera
+ros_joint_topic: /joint_states
+```
+
+- **Arms** are LeRobot robots (`lerobot_3d.robots.yam_follower.YamFollower`, registered as `yam_follower`) read from `ros_joint_topic`: `<side>_joint1..6` in radians, optional `<side>_joint7` finger travel in metres. Their observations use LeRobot's layout, `left_joint1.pos … left_joint6.pos, left_gripper.pos`. They're observe-only: `send_action` raises until a YAM teleop exists.
+- **Cameras**: each `ros_cameras` entry reads `color/image_raw/compressed`, lossless `depth_raw/image_rect_raw/compressedDepth`, both `camera_info` topics, and the depth-to-color transform from `/tf_static`, all under its `namespace`; override any of them with `color_topic`, `depth_topic`, `color_info_topic`, `depth_info_topic`. Depth is registered to the color image every frame (about 40 ms per 640×480 camera), so if the driver can publish depth already aligned to color (the RealSense ROS driver's `align_depth`), point `depth_topic`/`depth_info_topic` at that and the registration is skipped. A camera is named after its namespace (`/camera/top` → `camera_top`) in calibration files and datasets. `ros_cameras` and `realsense_serials` can be mixed, and fixed ROS cameras also work with `robot_type: so101`.
+- **Wrist cameras** (`link` set) sit at their URDF camera link, recomputed every frame from the measured joints. That's their pose unless you calibrate them (see [Performing calibration](#performing-calibration)).
+- **No followers** shows both arms at the URDF rest pose (every joint 0) with no ROS needed: a quick way to look at the model.
+- **Recording** stores the measured joints as each frame's `action` (there is no teleop command yet), with both arms' joints and links merged into one dataset.
+
+The station URDF and its meshes are bundled under `src/lerobot_3d/calibration/yam/`, vendored from [I2RT](https://github.com/i2rt-robotics/i2rt) revision `120c3c81400171174604e503943f8d1ebc891058` (MIT, see `yam/LICENSE`) with only the mesh paths rewritten; `urdf_path` overrides it. ROS 2 (`rclpy`, `sensor_msgs`, `tf2_msgs`) comes from your ROS installation, not pip, and is only imported when a YAM arm or ROS camera is configured.
+
 See `src/teleop_config.yaml` for the full, annotated field list (recording, URDF/calibration overrides, camera stream, smoothing) and `lerobot_3d.teleop_config.TeleopSystemConfig` for the underlying dataclass.
 
 **Resolution order** for both `teleop_config.yaml` and the extrinsics JSON: an environment variable (`LEROBOT_3D_TELEOP_CONFIG` / `LEROBOT_3D_EXTRINSIC_JSON`) → the current working directory → `src/<file>` next to the installed package (dev checkout).
@@ -131,6 +124,8 @@ Then run `lerobot-teleop` and use the terminal (it needs focus):
 - **Enter** — start an episode.
 - **Space** — end it. You're asked `Keep? [y/n]`: **y** saves it (encodes video), **n** discards it.
 - Quitting (viser **Quit** or Ctrl+C) discards an unsaved episode and finalizes the dataset.
+
+With `robot_type: yam` the measured joints are recorded as the action, and both arms go into the same dataset (`action`/`observation.state` hold the left arm's joints then the right arm's; link clouds are in the station's world frame).
 
 Teleop and the viser view keep running in every state. If a step can't keep up with `dataset_fps`, a warning is printed. Recorded timestamps assume a fixed rate, so lower `dataset_fps` (or the camera resolution) if you see it.
 
@@ -190,9 +185,9 @@ Pushing again after recording more episodes re-uploads the changed files. Anyone
 
 **Camera intrinsics** are written automatically to `intrinsic_calibration.json` (in the working directory) on every **Capture** and when `lerobot-teleop` shuts down; each connected camera's entry is added or refreshed, and entries for other cameras are kept.
 
-**Camera extrinsics** (each RealSense's pose relative to the robot base) are the main calibration workflow:
+**Camera extrinsics** (each camera's pose relative to the robot base) are the main calibration workflow. It's the same for RealSense cameras, ROS cameras (named after their namespace, e.g. `camera_top`) and both robot types:
 
-1. **New camera, no existing entry?** Bootstrap `extrinsic_calibration.json` with an identity transform for its serial:
+1. **New fixed camera, no existing entry?** Bootstrap `extrinsic_calibration.json` with an identity transform for its serial (or ROS camera name):
    ```json
    {
      "YOUR_SERIAL": {
@@ -209,6 +204,10 @@ Pushing again after recording more episodes re-uploads the changed files. Anyone
 5. For each camera, the viser GUI shows translate/rotate buttons (±X/±Y/±Z), a step-size cycle button, reset, confirm, and abort — nudge the point cloud onto the robot mesh, then **Confirm**. ICP then refines the confirmed pose automatically and shows the result for a second confirm/abort.
 6. Once every camera is done, all of them are shown together in color over the robot mesh, in a **Review / fine-tune merged result** panel. Pick a camera in the **Camera** dropdown and nudge it with the same buttons to line it up against the other cameras (**Reset** undoes that camera's nudges only). **Confirm** keeps the fine-tuned poses. **Abort** keeps the poses from step 5.
 7. The refined `extrinsic_calibration.json` is written back — ready for `lerobot-teleop`.
+
+**YAM specifics.** Capture needs live joints for both configured arms, writes both arms into `robot_pcd.npz` (densely sampled, in the station's world frame), and skips the follower homing step since the arms are observe-only. `icp.py` runs without RealSense installed; it only skips its live RealSense preview at the end.
+
+**Wrist cameras** (ROS cameras with a `link`) don't need an entry to start: they sit at their URDF camera link. Capture writes one for each, holding the current placement as ICP's starting `X_WC` plus the `link` and that link's pose at capture (`X_WL`), so a refined `X_WC` becomes a fixed mount offset, `inv(X_WL) @ X_WC`, that follows the arm at any joint angles. Calibrating them is optional. A wrist camera usually sees only the fingers, which gives ICP little to lock onto, so its auto-ICP result can slide off; accept it only if it visibly lines up better, otherwise **Abort** (keeps your manual alignment) or **Skip** the camera in the mask step to keep the URDF mount.
 
 ## Custom teleop script
 

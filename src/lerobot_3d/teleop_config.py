@@ -4,9 +4,18 @@ Values live in ``teleop_config.yaml``, not here -- see :func:`load_teleop_system
 Edit that file (or point ``--config`` / ``LEROBOT_3D_TELEOP_CONFIG`` at your own copy)
 to change hardware wiring or run settings; no code changes needed.
 
+``robot_type`` picks the robot: ``so101`` (default) or ``yam``. For ``yam``, ``followers`` lists the
+station's arms by ``side`` (``left``/``right``); they're read over ROS 2 and observe-only, since there
+is no YAM teleop yet, so ``leaders`` must be empty.
+
+Cameras: ``realsense_serials`` (USB RealSense) and ``ros_cameras`` (ROS 2 topics) may be mixed. A ROS
+camera without a ``link`` is fixed in the world like a RealSense one; with a ``link`` (YAM only) it
+moves with that URDF link, e.g. a wrist camera.
+
 ``leaders``, ``followers``, and ``realsense_serials`` may each be empty:
 
-- no leaders: actions come only from ``TeleopPointCloudSystem.step(action)``.
+- no leaders: actions come only from ``TeleopPointCloudSystem.step(action)`` (or, for YAM, from the
+  measured joints).
 - no followers: nothing is commanded; the action poses the URDF in viser (digital twin).
 - no leaders *and* no followers: ``num_robots`` virtual robots, each posed by its own
   ``step(actions)`` entry and laid out on a viser grid ``robot_grid_spacing`` apart.
@@ -27,6 +36,14 @@ DEFAULT_TELEOP_CONFIG_YAML = "teleop_config.yaml"
 """Default filename for the editable system config; resolved via
 :func:`lerobot_3d.paths.resolve_teleop_config_yaml`."""
 
+ROBOT_TYPES = ("so101", "yam")
+YAM_SIDES = ("left", "right")
+
+ROS_COLOR_TOPIC = "color/image_raw/compressed"
+ROS_COLOR_INFO_TOPIC = "color/camera_info"
+ROS_DEPTH_TOPIC = "depth_raw/image_rect_raw/compressedDepth"
+ROS_DEPTH_INFO_TOPIC = "depth_raw/camera_info"
+
 
 @dataclass(frozen=True)
 class SO101AxisConfig:
@@ -36,6 +53,54 @@ class SO101AxisConfig:
     """Device path, e.g. ``/dev/ttyACM0``."""
     id: str
     """LeRobot calibration / bus id, e.g. ``bender_leader_arm``."""
+
+
+@dataclass(frozen=True)
+class YamArmConfig:
+    """One arm of the YAM station, read over ROS 2."""
+
+    side: str
+    """``left`` or ``right``: the station URDF's joint/link name prefix."""
+
+
+@dataclass(frozen=True)
+class RosCameraConfig:
+    """One RGB-D camera published over ROS 2. Topic names are relative to ``namespace``."""
+
+    namespace: str
+    """e.g. ``/camera/top``; also names the camera (``camera_top``) in calibration files."""
+    link: str | None = None
+    """URDF link the camera is mounted on (e.g. ``left_camera``), or ``None`` for a camera fixed in
+    the world, calibrated through ``extrinsic_calibration.json`` like a RealSense camera."""
+    color_topic: str = ROS_COLOR_TOPIC
+    depth_topic: str = ROS_DEPTH_TOPIC
+    """Lossless (PNG) ``compressedDepth``. Point this at the driver's depth aligned to color (e.g.
+    ``aligned_depth_to_color/image_raw/compressedDepth``) to skip per-frame registration."""
+    color_info_topic: str = ROS_COLOR_INFO_TOPIC
+    depth_info_topic: str = ROS_DEPTH_INFO_TOPIC
+
+
+def _yam_arm_configs(entries: Sequence[Mapping[str, Any]]) -> tuple[YamArmConfig, ...]:
+    arms = []
+    for i, entry in enumerate(entries):
+        try:
+            arms.append(YamArmConfig(side=str(entry["side"])))
+        except KeyError as e:
+            raise ValueError(f"{DEFAULT_TELEOP_CONFIG_YAML}: followers[{i}] missing required field {e}") from e
+    return tuple(arms)
+
+
+def _ros_camera_configs(entries: Sequence[Mapping[str, Any]]) -> tuple[RosCameraConfig, ...]:
+    fields = {f.name for f in dataclasses.fields(RosCameraConfig)}
+    cameras = []
+    for i, entry in enumerate(entries):
+        if "namespace" not in entry:
+            raise ValueError(f"{DEFAULT_TELEOP_CONFIG_YAML}: ros_cameras[{i}] missing required field 'namespace'")
+        unknown = set(entry) - fields
+        if unknown:
+            raise ValueError(f"{DEFAULT_TELEOP_CONFIG_YAML}: ros_cameras[{i}] has unknown fields {sorted(unknown)}")
+        cameras.append(RosCameraConfig(**{k: v for k, v in entry.items() if v is not None}))
+    return tuple(cameras)
 
 
 def _axis_configs(entries: Sequence[Mapping[str, Any]], *, key: str) -> tuple[SO101AxisConfig, ...]:
@@ -105,11 +170,17 @@ class TeleopSystemConfig:
     """
 
     leaders: tuple[SO101AxisConfig, ...]
-    followers: tuple[SO101AxisConfig, ...]
+    followers: tuple[SO101AxisConfig, ...] | tuple[YamArmConfig, ...]
     realsense_serials: tuple[str, ...]
+    robot_type: str = "so101"
+    """``so101`` or ``yam``; decides what ``followers`` entries are and which URDF is used."""
+    ros_cameras: tuple[RosCameraConfig, ...] = ()
+    """RGB-D cameras read from ROS 2 topics (any robot type; ``link`` needs ``yam``)."""
+    ros_joint_topic: str = "/joint_states"
+    """``sensor_msgs/JointState`` topic the YAM arms are read from."""
     extrinsic_json: str = "extrinsic_calibration.json"
     urdf_path: str | None = None
-    """``None`` → bundled ``so101_new_calib.urdf`` under package ``calibration/``."""
+    """``None`` → the bundled URDF for ``robot_type`` under package ``calibration/``."""
     robot_calibration_ids: tuple[str, ...] | None = None
     """HF / LeRobot calibration name per follower; ``None`` → each follower's ``id`` (or, with
     no followers, the first leader's ``id``). With no followers, one entry is broadcast to all
@@ -154,10 +225,21 @@ class TeleopSystemConfig:
     """LeRobot device type whose calibration poses the URDF: ``"so101_leader"`` when there are
     no followers and ``robot_calibration_ids`` was defaulted from a leader. Derived, not set."""
 
+    @property
+    def yam_sides(self) -> tuple[str, ...]:
+        """YAM arms in use: the followers' sides, or both arms when there are no followers."""
+        if self.robot_type != "yam":
+            return ()
+        return tuple(arm.side for arm in self.followers) if self.followers else YAM_SIDES
+
     def __post_init__(self) -> None:
         object.__setattr__(self, "realsense_serials", tuple(self.realsense_serials))
         object.__setattr__(self, "leaders", tuple(self.leaders))
         object.__setattr__(self, "followers", tuple(self.followers))
+        object.__setattr__(self, "ros_cameras", tuple(self.ros_cameras))
+        if self.robot_type not in ROBOT_TYPES:
+            raise ValueError(f"robot_type must be one of {ROBOT_TYPES}, got {self.robot_type!r}.")
+        self._validate_cameras()
         if self.camera_width <= 0 or self.camera_height <= 0 or self.camera_fps <= 0:
             raise ValueError("camera_width, camera_height, and camera_fps must be positive.")
         if self.action_interpolation_duration_s < 0:
@@ -174,6 +256,9 @@ class TeleopSystemConfig:
             raise ValueError("dataset_fps must be positive.")
         if self.dataset_repo_id and self.num_robots > 1:
             raise ValueError("Dataset recording supports a single robot (num_robots must be 1).")
+        if self.robot_type == "yam":
+            self._validate_yam()
+            return
         if self.robot_calibration_ids is None:
             if self.followers:
                 ids = tuple(f.id for f in self.followers)
@@ -216,7 +301,33 @@ class TeleopSystemConfig:
                 )
 
 
-_SPECIAL_FIELDS = {"leaders", "followers", "realsense_serials", "calibration_robot_type"}
+    def _validate_cameras(self) -> None:
+        names = [str(s) for s in self.realsense_serials]
+        for cam in self.ros_cameras:
+            names.append(cam.namespace.strip("/").replace("/", "_"))
+            if cam.link is not None and self.robot_type != "yam":
+                raise ValueError(f"ros_cameras {cam.namespace}: 'link' is only supported with robot_type: yam.")
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise ValueError(f"Camera names must be unique across realsense_serials and ros_cameras: {duplicates}")
+
+    def _validate_yam(self) -> None:
+        if self.leaders:
+            raise ValueError("robot_type: yam has no teleop yet; leaders must be empty (the arms are observed).")
+        if self.num_robots != 1:
+            raise ValueError("num_robots is for SO101 virtual robots; list YAM arms under followers instead.")
+        sides = [arm.side for arm in self.followers]
+        if any(side not in YAM_SIDES for side in sides) or len(set(sides)) != len(sides):
+            raise ValueError(f"YAM followers need distinct sides from {YAM_SIDES}, got {sides}.")
+        for cam in self.ros_cameras:
+            if cam.link is not None and cam.link.split("_")[0] not in self.yam_sides:
+                raise ValueError(
+                    f"ros_cameras {cam.namespace} is on link {cam.link!r}, but that arm isn't in followers."
+                )
+        object.__setattr__(self, "robot_calibration_ids", ())
+
+
+_SPECIAL_FIELDS = {"leaders", "followers", "realsense_serials", "ros_cameras", "calibration_robot_type"}
 
 
 def load_teleop_system_config(path: str | Path | None = None) -> TeleopSystemConfig:
@@ -233,9 +344,15 @@ def load_teleop_system_config(path: str | Path | None = None) -> TeleopSystemCon
     known_fields = {f.name for f in dataclasses.fields(TeleopSystemConfig)} - _SPECIAL_FIELDS
     kwargs = {k: v for k, v in data.items() if k in known_fields and v is not None}
 
+    followers = data.get("followers") or []
     return TeleopSystemConfig(
         leaders=_axis_configs(data.get("leaders") or [], key="leaders"),
-        followers=_axis_configs(data.get("followers") or [], key="followers"),
+        followers=(
+            _yam_arm_configs(followers)
+            if data.get("robot_type") == "yam"
+            else _axis_configs(followers, key="followers")
+        ),
         realsense_serials=tuple(str(s) for s in data.get("realsense_serials") or []),
+        ros_cameras=_ros_camera_configs(data.get("ros_cameras") or []),
         **kwargs,
     )

@@ -3,8 +3,11 @@ from pathlib import Path
 import pytest
 
 from lerobot_3d.teleop_config import (
+    ROS_DEPTH_TOPIC,
+    RosCameraConfig,
     SO101AxisConfig,
     TeleopSystemConfig,
+    YamArmConfig,
     _axis_configs,
     _validate_axis_sets,
     load_teleop_system_config,
@@ -374,3 +377,102 @@ def test_load_teleop_system_config_none_values_dont_override_defaults(teleop_con
 def test_load_teleop_system_config_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         load_teleop_system_config(str(tmp_path / "does_not_exist.yaml"))
+
+
+# ---------------------------------------------------------------------------
+# robot_type: yam and ros_cameras
+# ---------------------------------------------------------------------------
+
+YAM_YAML = {
+    "robot_type": "yam",
+    "leaders": [],
+    "followers": [{"side": "left"}, {"side": "right"}],
+    "realsense_serials": [],
+    "ros_cameras": [
+        {"namespace": "/camera/top"},
+        {"namespace": "/camera/left_wrist", "link": "left_camera"},
+        {"namespace": "/camera/right_wrist", "link": "right_camera",
+         "depth_topic": "aligned_depth_to_color/image_raw/compressedDepth"},
+    ],
+}
+
+
+def _yam_config(**overrides) -> TeleopSystemConfig:
+    kwargs = dict(leaders=(), followers=(YamArmConfig("left"), YamArmConfig("right")), realsense_serials=(),
+                  robot_type="yam")
+    kwargs.update(overrides)
+    return TeleopSystemConfig(**kwargs)
+
+
+def test_robot_type_defaults_to_so101():
+    config = _minimal_config()
+    assert config.robot_type == "so101" and config.ros_cameras == () and config.yam_sides == ()
+
+
+def test_unknown_robot_type_raises():
+    with pytest.raises(ValueError, match="robot_type"):
+        _minimal_config(robot_type="ur5")
+
+
+def test_load_yam_config(teleop_config_yaml_factory):
+    config = load_teleop_system_config(teleop_config_yaml_factory(YAM_YAML))
+    assert config.followers == (YamArmConfig("left"), YamArmConfig("right"))
+    assert config.yam_sides == ("left", "right")
+    assert config.ros_joint_topic == "/joint_states"
+    top, left, right = config.ros_cameras
+    assert top == RosCameraConfig("/camera/top") and top.link is None and top.depth_topic == ROS_DEPTH_TOPIC
+    assert left.link == "left_camera"
+    assert right.depth_topic == "aligned_depth_to_color/image_raw/compressedDepth"
+    assert config.robot_calibration_ids == ()  # YAM joints are radians; no LeRobot calibration
+
+
+def test_yam_single_arm(teleop_config_yaml_factory):
+    config = load_teleop_system_config(teleop_config_yaml_factory(
+        {**YAM_YAML, "followers": [{"side": "right"}], "ros_cameras": YAM_YAML["ros_cameras"][2:]}))
+    assert config.yam_sides == ("right",)
+
+
+def test_yam_without_followers_previews_both_arms():
+    assert _yam_config(followers=()).yam_sides == ("left", "right")
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"leaders": (SO101AxisConfig("/dev/ttyACM0", "leader"),)}, "no teleop"),
+        ({"followers": (YamArmConfig("left"), YamArmConfig("left"))}, "distinct sides"),
+        ({"followers": (YamArmConfig("middle"),)}, "distinct sides"),
+        ({"num_robots": 2}, "num_robots"),
+        ({"followers": (YamArmConfig("left"),),
+          "ros_cameras": (RosCameraConfig("/camera/right_wrist", link="right_camera"),)}, "isn't in followers"),
+    ],
+)
+def test_invalid_yam_configs_raise(overrides, match):
+    with pytest.raises(ValueError, match=match):
+        _yam_config(**overrides)
+
+
+def test_linked_ros_camera_needs_yam():
+    with pytest.raises(ValueError, match="only supported with robot_type: yam"):
+        _minimal_config(ros_cameras=(RosCameraConfig("/camera/wrist", link="gripper_link"),))
+
+
+def test_fixed_ros_camera_works_with_so101():
+    config = _minimal_config(ros_cameras=(RosCameraConfig("/camera/top"),))
+    assert config.ros_cameras[0].namespace == "/camera/top"
+
+
+def test_camera_names_must_be_unique():
+    with pytest.raises(ValueError, match="unique"):
+        _yam_config(ros_cameras=(RosCameraConfig("/camera/top"), RosCameraConfig("camera/top/")))
+
+
+def test_ros_camera_yaml_errors(teleop_config_yaml_factory):
+    with pytest.raises(ValueError, match="namespace"):
+        load_teleop_system_config(teleop_config_yaml_factory({**YAM_YAML, "ros_cameras": [{"link": "left_camera"}]}))
+    with pytest.raises(ValueError, match="unknown fields"):
+        load_teleop_system_config(teleop_config_yaml_factory(
+            {**YAM_YAML, "ros_cameras": [{"namespace": "/camera/top", "serial": "x"}]}))
+    with pytest.raises(ValueError, match="side"):
+        load_teleop_system_config(teleop_config_yaml_factory({**YAM_YAML, "followers": [{"port": "/dev/x"}]}))
+

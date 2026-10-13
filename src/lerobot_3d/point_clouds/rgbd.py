@@ -84,6 +84,46 @@ def sample_colors(points_in_color: np.ndarray, color_rgb: np.ndarray, K_color: n
     return colors
 
 
+def register_depth_to_color(
+    depth: np.ndarray,
+    K_depth: np.ndarray,
+    depth_scale: float,
+    T_color_depth: np.ndarray,
+    K_color: np.ndarray,
+    color_shape: tuple[int, ...],
+) -> np.ndarray:
+    """Resample ``depth`` onto the color image grid, keeping its units and dtype.
+
+    Afterwards color pixel ``(v, u)`` and depth pixel ``(v, u)`` see the same point, so a mask drawn
+    on the color image applies to the depth directly and ``K_color`` back-projects it. Color pixels
+    no depth pixel lands on are 0; where several land on one pixel the nearest wins.
+    ``depth_scale`` (metres per unit) only matters because ``T_color_depth`` is in metres.
+    Depth that is already aligned (same grid, same K, identity extrinsics) is returned as is.
+    """
+    h, w = color_shape[:2]
+    K = np.asarray(K_color, dtype=np.float64).reshape(3, 3)
+    if (
+        depth.shape == (h, w)
+        and np.allclose(np.asarray(K_depth, dtype=np.float64).reshape(3, 3), K)
+        and np.allclose(T_color_depth, np.eye(4))
+    ):
+        return depth
+    points = transform_points(T_color_depth, depth_to_points(depth, K_depth, depth_scale))
+    points = points[points[:, 2] > 1e-6]
+    z = points[:, 2]
+    u = np.round(points[:, 0] * K[0, 0] / z + K[0, 2]).astype(np.int64)
+    v = np.round(points[:, 1] * K[1, 1] / z + K[1, 2]).astype(np.int64)
+    inside = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+    pixel, z = v[inside] * w + u[inside], z[inside]
+    # Nearest first, then keep the first hit per pixel.
+    order = np.argsort(z, kind="stable")
+    pixel, z = pixel[order], z[order]
+    pixel, first = np.unique(pixel, return_index=True)
+    out = np.zeros(h * w, dtype=depth.dtype)
+    out[pixel] = np.round(z[first] / depth_scale).astype(depth.dtype)
+    return out.reshape(h, w)
+
+
 def colored_cloud(
     depth: np.ndarray,
     K_depth: np.ndarray,

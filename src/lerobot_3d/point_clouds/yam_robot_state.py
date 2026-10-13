@@ -16,18 +16,31 @@ def transform_points(matrix, points):
     return np.einsum("ij,nj->ni", matrix[:3, :3], points) + matrix[:3, 3]
 
 
-class YamRobotState:
-    """Use I2RT's composed station URDF and measured radians, without SO101 scaling.
+LIMIT_SLACK = (0.2, 0.005)
+"""Beyond-limit slack (radians for arm joints, metres for finger travel) treated as sensor noise and
+clipped. Rest sits exactly on some lower limits (joints 2 and 3 at 0), so measured noise lands just
+past them. Anything further out means the joint mapping is wrong and raises."""
 
-    ``position_rad`` contains six arm angles. ``gripper_open`` is normalized
-    closed=0/open=1 for the station's two positive-travel linear_4310 fingers.
-    Base and camera placements are exactly those in the supplied URDF.
+
+def joint_keys(side: str) -> list[str]:
+    """One arm's LeRobot-style observation/action keys, in URDF joint order."""
+    return [f"{side}_joint{i}.pos" for i in range(1, 7)] + [f"{side}_gripper.pos"]
+
+
+class YamRobotState:
+    """FK and mesh sampling for one arm of I2RT's composed YAM station URDF.
+
+    Observations are keyed like a LeRobot robot (see :func:`joint_keys`): ``<side>_joint1..6.pos``
+    in radians and ``<side>_gripper.pos`` as finger travel in metres, which drives both
+    linear_4310 fingers. Base and camera placements are exactly those in the URDF, so snapshots are
+    placed at the arm's station pose rather than on a grid.
     """
 
     def __init__(self, urdf_path, side):
         if side not in ("left", "right"):
             raise ValueError("side must be left or right")
         self.side = side
+        self.keys = joint_keys(side)
         self.robot_urdf = URDF.load(str(urdf_path))
         self.joints = [self.robot_urdf.joint_map[f"{side}_joint{i}"] for i in range(1, 9)]
         for i, joint in enumerate(self.joints):
@@ -57,24 +70,38 @@ class YamRobotState:
             raise ValueError("The selected arm has no visual meshes")
         self._calibration_points = None
 
+    def rest_observation(self) -> dict[str, float]:
+        """The URDF's own rest configuration: every joint at 0, fingers closed."""
+        return dict.fromkeys(self.keys, 0.0)
+
     def get_joint_positions(self, observation):
-        q = np.asarray(observation["position_rad"], dtype=float)
-        opening = float(observation["gripper_open"])
-        if q.shape != (6,) or not np.isfinite(q).all() or not np.isfinite(opening) or not 0 <= opening <= 1:
-            raise ValueError("Expected six finite radians and gripper_open in [0, 1]")
-        values = [*q, *(opening * joint.limit.upper for joint in self.joints[6:])]
-        for joint, value in zip(self.joints, values):
-            if not joint.limit.lower - 1e-5 <= value <= joint.limit.upper + 1e-5:
-                raise ValueError(f"{joint.name} outside URDF limits; verify measured joint mapping")
-        return {joint.name: float(value) for joint, value in zip(self.joints, values)}
+        """Observation -> URDF joint values, with sensor noise at the limits clipped away."""
+        try:
+            values = [float(observation[key]) for key in self.keys]
+        except KeyError as e:
+            raise ValueError(f"YAM {self.side} observation is missing {e}") from e
+        values.append(values[-1])  # both fingers travel together
+        out = {}
+        for i, (joint, value) in enumerate(zip(self.joints, values)):
+            slack = LIMIT_SLACK[int(i >= 6)]
+            if not np.isfinite(value) or not joint.limit.lower - slack <= value <= joint.limit.upper + slack:
+                raise ValueError(
+                    f"{joint.name}={value} is outside the URDF limits "
+                    f"[{joint.limit.lower}, {joint.limit.upper}]; check the joint mapping"
+                )
+            out[joint.name] = float(np.clip(value, joint.limit.lower, joint.limit.upper))
+        return out
 
     def get_static_meshes(self):
         return self._meshes
 
     def get_link_transform(self, observation, link):
+        """World (URDF) pose of ``link`` at ``observation``."""
         return self.robot_urdf.link_fk(cfg=self.get_joint_positions(observation), use_names=True)[link]
 
-    def get_robot_snapshot(self, observation, index=0):
+    def get_robot_snapshot(self, observation, index=0, base_offset=None):
+        """Same interface as ``RobotState.get_robot_snapshot``; ``base_offset`` is ignored because
+        the arm's base pose comes from the station URDF."""
         joints = self.get_joint_positions(observation)
         poses = self.robot_urdf.link_fk(cfg=joints, use_names=True)
         base = poses[self.side + "_base"]
@@ -89,7 +116,7 @@ class YamRobotState:
         }
         return RobotSnapshot(
             index=index,
-            joint_positions=joints,
+            joint_positions={key: float(observation[key]) for key in self.keys},
             joint_radians={joint.name: joints[joint.name] for joint in self.joints[:6]},
             pcd=np.concatenate(list(per_link.values())),
             link_pcds=per_link,
@@ -98,13 +125,8 @@ class YamRobotState:
             base_wxyz=tuple(Rotation.from_matrix(base[:3, :3]).as_quat()[[3, 0, 1, 2]]),
         )
 
-    def get_mesh_points(self, observation, *, gripper_only=False):
-        """Mesh target in URDF world, or just this gripper in its own flange frame.
-
-        Gripper-local calibration needs only ``gripper_open``: arm joint angles
-        cancel between the camera mount and its own gripper. Camera meshes are
-        excluded from this target. Dimensions and finger travel come from URDF.
-        """
+    def get_mesh_points(self, observation):
+        """Dense mesh samples of this arm in the URDF world frame: the ICP target on Capture."""
         # ICP's final 2 mm correspondence radius needs a denser target than the
         # lightweight display cloud. Cache these independent samples once.
         if self._calibration_points is None:
@@ -117,16 +139,5 @@ class YamRobotState:
                 )
                 for name, _, vertices, faces in self._meshes
             ]
-        if gripper_only:
-            # An arbitrary internal FK reference, never represented as feedback.
-            observation = {"position_rad": np.zeros(6), "gripper_open": observation["gripper_open"]}
         poses = self.robot_urdf.link_fk(cfg=self.get_joint_positions(observation), use_names=True)
-        reference = np.linalg.inv(poses[self.side + "_gripper"]) if gripper_only else np.eye(4)
-        gripper_links = {self.side + suffix for suffix in ("_gripper", "_tip_left", "_tip_right")}
-        return np.concatenate(
-            [
-                transform_points(reference @ poses[name], points)
-                for name, points in self._calibration_points
-                if not gripper_only or name in gripper_links
-            ]
-        )
+        return np.concatenate([transform_points(poses[name], points) for name, points in self._calibration_points])

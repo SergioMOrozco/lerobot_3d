@@ -13,10 +13,11 @@ import cv2
 from lerobot.robots.so101_follower import SO101FollowerConfig, SO101Follower
 from lerobot.utils.constants import ROBOTS, TELEOPERATORS
 from lerobot_3d.teleop_config import TeleopSystemConfig
-from lerobot_3d.paths import CALIBRATION_DIR
+from lerobot_3d.paths import CALIBRATION_DIR, YAM_URDF_PATH
 from lerobot_3d.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
 from lerobot_3d.point_clouds.viser_viewer import ViserSceneViewer, grid_offsets
 from lerobot_3d.point_clouds.robot_state import RobotState
+from lerobot_3d.point_clouds.yam_robot_state import YamRobotState
 from lerobot_3d.calibration_mask import (
     SEGMENT_HELP,
     RobotSegmenter,
@@ -97,9 +98,21 @@ class SystemStateViewer:
             if serials
             else None
         )
-        self.followers = [
-            SO101Follower(SO101FollowerConfig(port=ax.port, id=ax.id)) for ax in config.followers
-        ]
+        self.robot_type = config.robot_type
+        if config.robot_type == "yam":
+            # Imported here so SO101 setups never touch ROS.
+            from lerobot_3d.robots.yam_follower import YamFollower, YamFollowerConfig
+
+            self.followers = [
+                YamFollower(YamFollowerConfig(side=arm.side, id=f"yam_{arm.side}", joint_topic=config.ros_joint_topic))
+                for arm in config.followers
+            ]
+        else:
+            self.followers = [
+                SO101Follower(SO101FollowerConfig(port=ax.port, id=ax.id)) for ax in config.followers
+            ]
+        self.observe_only = config.robot_type == "yam" and bool(self.followers)
+        """YAM followers are read, never commanded (no YAM teleop yet): ``update()`` takes no actions."""
 
         self.segment_on_capture = config.segment_on_capture
         self._segmenter = RobotSegmenter(config.sam2_model_id)
@@ -115,12 +128,46 @@ class SystemStateViewer:
             for bot in self.followers:
                 bot.connect()
             print("Connected.")
-            self._home_actions = self._read_follower_positions()
-            if self.action_interpolation_duration_s > 0:
-                self._start_action_thread()
+            if not self.observe_only:
+                self._home_actions = self._read_follower_positions()
+                if self.action_interpolation_duration_s > 0:
+                    self._start_action_thread()
         else:
             print("No followers configured; actions only pose the URDF in viser.")
 
+        if config.robot_type == "yam":
+            self._init_yam_robots(config)
+        else:
+            self._init_so101_robots(config)
+        self.serials = serials
+
+        self.ros_stream = None
+        self._link_robot: dict[str, int] = {}
+        """URDF link -> index of the robot it belongs to, for placing linked ROS cameras."""
+        self._last_link_poses: dict[str, np.ndarray] | None = None
+        if config.ros_cameras:
+            from lerobot_3d.point_clouds.ros_camera_stream import RosCameraStream
+
+            self.ros_stream = RosCameraStream(config.ros_cameras, config.extrinsic_json)
+            sides = [state.side for state in self.robot_states]
+            self._link_robot = {link: sides.index(link.split("_")[0]) for link in self.ros_stream.links}
+
+    def _init_yam_robots(self, config: TeleopSystemConfig) -> None:
+        # One YamRobotState per arm; each snapshot carries the arm's station pose from the URDF,
+        # so there is no grid layout.
+        urdf = config.urdf_path or str(YAM_URDF_PATH)
+        self.robot_states = [YamRobotState(urdf, side) for side in config.yam_sides]
+        self.num_robots = len(self.robot_states)
+        self.base_offsets = [None] * self.num_robots
+        for i, robot_state in enumerate(self.robot_states):
+            self.viewer.load_static_meshes(robot_state.get_static_meshes(), robot_index=i)
+        self.robot_state = self.robot_states[0]
+
+    def rest_actions(self) -> list[dict[str, float]]:
+        """One rest-pose action per robot (YAM only): poses virtual arms with no hardware."""
+        return [robot_state.rest_observation() for robot_state in self.robot_states]
+
+    def _init_so101_robots(self, config: TeleopSystemConfig) -> None:
         urdf = config.urdf_path or str(CALIBRATION_DIR / "so101_new_calib.urdf")
         # With followers, FK / mesh visualization uses the first follower's observation and its
         # calibration id. With no followers, num_robots virtual robots are each posed by their
@@ -158,8 +205,6 @@ class SystemStateViewer:
             )
         self.robot_state = self.robot_states[0]
 
-        self.serials = serials
-
     def update(self, *actions, masks_by_serial=None):
         # actions are simply joint states: one per follower, or one per virtual robot
         # (num_robots) with no followers -- those pose the URDFs directly instead of being
@@ -179,11 +224,13 @@ class SystemStateViewer:
         if self.viewer.quit:
             self.quit = True
 
-        expected = len(self.followers) if self.followers else self.num_robots
-        if len(actions) != expected:
+        if self.observe_only:
+            if actions:
+                raise ValueError("YAM followers are observe-only (no YAM teleop yet); call update() with no actions.")
+            observations = [follower.get_observation() for follower in self.followers]
+        elif len(actions) != (expected := len(self.followers) if self.followers else self.num_robots):
             raise ValueError(f"Expected {expected} actions, got {len(actions)}")
-
-        if self.followers:
+        elif self.followers:
             self._set_action_targets(self._blend_from_resume(actions))
             with self._follower_io_lock:
                 observations = [self.followers[0].get_observation()]
@@ -194,13 +241,19 @@ class SystemStateViewer:
             robot_state.get_robot_snapshot(obs, index=i, base_offset=self.base_offsets[i])
             for i, (robot_state, obs) in enumerate(zip(self.robot_states, observations))
         ]
-        # Robot 0 sits at the world origin, so its base-frame cloud is also world frame --
-        # capture/recording keep using it exactly as before.
-        robot_pcd_np = snapshots[0].pcd
         datapoints = self.stream.get_datapoints() if self.stream is not None else []
+        link_poses = None
+        if self.ros_stream is not None:
+            link_poses = {
+                link: self.robot_states[i].get_link_transform(observations[i], link)
+                for link, i in self._link_robot.items()
+            }
+            self._last_link_poses = link_poses
+            datapoints += self.ros_stream.get_datapoints(link_poses)
 
+        joint_positions = {key: value for obs in observations for key, value in obs.items()}
         for datapoint in datapoints:
-            datapoint.joint_positions = observations[0]
+            datapoint.joint_positions = joint_positions
 
         if self.viewer.capture:
             self.viewer.capture = False
@@ -225,9 +278,14 @@ class SystemStateViewer:
 
                 cv2.imwrite(os.path.join(serial_dir, "color.png"), datapoint.color)
                 np.savez_compressed(os.path.join(serial_dir, "depth.npz"), depth=np.array(datapoint.depth))
-            np.savez_compressed(os.path.join(calibration_dir, "robot_pcd.npz"), pcd=np.array(robot_pcd_np))
+            np.savez_compressed(
+                os.path.join(calibration_dir, "robot_pcd.npz"),
+                pcd=np.array(self._capture_robot_pcd(observations, snapshots)),
+            )
             # icp.py needs intrinsics for every captured camera; don't wait for shutdown.
             write_intrinsics(datapoints)
+            if self.ros_stream is not None:
+                self._write_extrinsic_seeds(self.ros_stream.extrinsic_seeds(link_poses))
 
             if self.segment_on_capture:
                 self._home_followers()
@@ -395,6 +453,29 @@ class SystemStateViewer:
             return actions
         return blend_actions(start, actions, alpha)
 
+    def _capture_robot_pcd(self, observations, snapshots) -> np.ndarray:
+        """World-frame ICP target. SO101: robot 0 sits at the world origin, so its base-frame cloud
+        is already world frame. YAM: every arm, densely sampled at its station pose."""
+        if self.robot_type == "yam":
+            return np.concatenate([
+                robot_state.get_mesh_points(obs) for robot_state, obs in zip(self.robot_states, observations)
+            ])
+        return snapshots[0].pcd
+
+    def _write_extrinsic_seeds(self, seeds: dict) -> None:
+        """Add/replace linked cameras' entries (starting ``X_WC`` plus ``link``/``X_WL``) in the
+        extrinsics file, keeping every other camera's entry."""
+        if not seeds:
+            return
+        path = self.ros_stream.extrinsics_file
+        extrinsics = {}
+        if os.path.exists(path):
+            with open(path) as f:
+                extrinsics = json.load(f)
+        extrinsics.update(seeds)
+        with open(path, "w") as f:
+            json.dump(extrinsics, f, indent=8)
+
     def _segment_capture(self, datapoints, calibration_dir: str) -> None:
         # Blocks the teleop loop on purpose: the robot has to hold the captured pose anyway
         # (robot_pcd.npz), and followers keep their last commanded target meanwhile.
@@ -437,8 +518,17 @@ class SystemStateViewer:
 
         if self.stream is not None:
             write_intrinsics(self.stream.get_datapoints())
+        if self.ros_stream is not None and self._last_link_poses is not None:
+            write_intrinsics(self.ros_stream.get_datapoints(self._last_link_poses))
 
         self.viewer.close()
 
         if self.stream is not None:
             self.stream.stop()
+        if self.robot_type == "yam":
+            for follower in self.followers:
+                follower.disconnect()
+        if self.ros_stream is not None or self.robot_type == "yam":
+            from lerobot_3d.ros_hub import shutdown_ros_hub
+
+            shutdown_ros_hub()

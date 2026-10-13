@@ -144,7 +144,12 @@ def main(viewer: AlignmentViewer):
     mesh_pcd.points = o3d.utility.Vector3dVector(robot_pcd)
     mesh_pcd.paint_uniform_color([0.0, 1.0, 0.0])  # red
     mesh_pcd.estimate_normals()
-    mesh_pcd.orient_normals_consistent_tangent_plane(k=15)
+    try:
+        mesh_pcd.orient_normals_consistent_tangent_plane(k=15)
+    except RuntimeError as e:
+        # qhull can fail on dense, near-degenerate targets (e.g. both YAM arms). Point-to-plane ICP
+        # only uses each normal's line, not its sign, so unoriented normals give the same result.
+        print(f"Keeping unoriented target normals ({str(e).splitlines()[0]})")
 
     viewer.show("/target", np.asarray(mesh_pcd.points), np.asarray(mesh_pcd.colors))
 
@@ -236,13 +241,19 @@ def main(viewer: AlignmentViewer):
 
 
 if __name__ == "__main__":
-    from lerobot_3d.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
-
     viewer = AlignmentViewer()
     try:
         serials = main(viewer)
 
-        stream = MultiRealSenseStream(serials, "extrinsic_calibration.json")
+        # Live preview of the result needs the cameras as RealSense devices; YAM ROS cameras
+        # (or a machine without pyrealsense2) just skip it -- the calibration is already saved.
+        try:
+            from lerobot_3d.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
+
+            stream = MultiRealSenseStream(serials, "extrinsic_calibration.json")
+        except (ImportError, RuntimeError) as e:
+            print(f"Saved extrinsic_calibration.json; no live RealSense preview ({e}).")
+            raise SystemExit(0) from None
         try:
             for i in range(1000):
                 datapoints = stream.get_datapoints()
