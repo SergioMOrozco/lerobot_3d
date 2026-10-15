@@ -243,7 +243,7 @@ def _virtual_robots_viewer(num_robots=1) -> SystemStateViewer:
     viewer.num_robots = num_robots
     viewer.base_offsets = grid_offsets(num_robots, spacing=0.5)
     viewer.followers = []
-    viewer.observe_only = False
+    viewer.yam_followers = False
     viewer.robot_type = "so101"
     viewer.stream = None
     viewer.ros_stream = None

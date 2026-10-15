@@ -8,6 +8,7 @@ from lerobot_3d.teleop_config import (
     SO101AxisConfig,
     TeleopSystemConfig,
     YamArmConfig,
+    YamLeaderConfig,
     _axis_configs,
     _validate_axis_sets,
     load_teleop_system_config,
@@ -418,7 +419,7 @@ def test_load_yam_config(teleop_config_yaml_factory):
     config = load_teleop_system_config(teleop_config_yaml_factory(YAM_YAML))
     assert config.followers == (YamArmConfig("left"), YamArmConfig("right"))
     assert config.yam_sides == ("left", "right")
-    assert config.ros_joint_topic == "/joint_states"
+    assert config.followers[0].joint_topic is None  # YamFollowerConfig defaults it to /left/joint_states
     top, left, right = config.ros_cameras
     assert top == RosCameraConfig("/camera/top") and top.link is None and top.depth_topic == ROS_DEPTH_TOPIC
     assert left.link == "left_camera"
@@ -439,7 +440,9 @@ def test_yam_without_followers_previews_both_arms():
 @pytest.mark.parametrize(
     ("overrides", "match"),
     [
-        ({"leaders": (SO101AxisConfig("/dev/ttyACM0", "leader"),)}, "no teleop"),
+        ({"leaders": (SO101AxisConfig("/dev/ttyACM0", "leader"),)}, "one leader"),
+        ({"leaders": (YamLeaderConfig(), YamLeaderConfig())}, "one leader"),
+        ({"leaders": (YamLeaderConfig("gamepad"),)}, "one leader"),
         ({"followers": (YamArmConfig("left"), YamArmConfig("left"))}, "distinct sides"),
         ({"followers": (YamArmConfig("middle"),)}, "distinct sides"),
         ({"num_robots": 2}, "num_robots"),
@@ -475,4 +478,20 @@ def test_ros_camera_yaml_errors(teleop_config_yaml_factory):
             {**YAM_YAML, "ros_cameras": [{"namespace": "/camera/top", "serial": "x"}]}))
     with pytest.raises(ValueError, match="side"):
         load_teleop_system_config(teleop_config_yaml_factory({**YAM_YAML, "followers": [{"port": "/dev/x"}]}))
+
+
+def test_yam_keyboard_leader_drives_virtual_arms(teleop_config_yaml_factory):
+    config = load_teleop_system_config(teleop_config_yaml_factory(
+        {"robot_type": "yam", "leaders": [{"type": "keyboard"}], "followers": [], "realsense_serials": []}))
+    assert config.leaders == (YamLeaderConfig("keyboard"),)
+    assert config.yam_sides == ("left", "right")
+
+
+def test_yam_keyboard_can_drive_real_arms_with_custom_topics(teleop_config_yaml_factory):
+    config = load_teleop_system_config(teleop_config_yaml_factory({
+        "robot_type": "yam", "leaders": [{"type": "keyboard"}], "realsense_serials": [],
+        "followers": [{"side": "left"}, {"side": "right", "joint_topic": "/r/js", "command_topic": "/r/cmd"}],
+    }))
+    assert config.leaders == (YamLeaderConfig("keyboard"),)
+    assert config.followers == (YamArmConfig("left"), YamArmConfig("right", "/r/js", "/r/cmd"))
 

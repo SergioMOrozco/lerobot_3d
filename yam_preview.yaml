@@ -1,8 +1,13 @@
-# YAM preview: both arms drawn at the URDF rest pose (every joint 0, grippers closed).
-# No arms, teleop, cameras or ROS are used.
+# YAM preview: both virtual arms, driven from the terminal with the end-effector keyboard teleop.
+# No real arms, cameras or ROS are used.
 #   lerobot-teleop --config yam_preview.yaml
+# Keys (the terminal running lerobot-teleop needs focus):
+#   w/s: +x/-x  a/d: +y/-y  r/f: +z/-z  i/k: pitch  j/l: yaw  u/o: roll
+#   g/h: gripper open/close  Tab: switch arm  0: home arm  Shift: 4x
+# The arms start folded at the URDF rest pose, so move up (r) or forward (w) first.
 robot_type: yam
-leaders: []
+leaders:
+  - type: keyboard
 followers: []
 realsense_serials: []
 ros_cameras: []

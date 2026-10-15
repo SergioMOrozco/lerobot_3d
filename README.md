@@ -78,14 +78,16 @@ viser_port: 8080
 
 ### YAM arms and ROS cameras
 
-Set `robot_type: yam` to use the I2RT YAM v1 / linear_4310 station instead of SO101 arms:
+Set `robot_type: yam` to use the I2RT YAM v1 / linear_4310 station instead of SO101 arms. The arms and
+cameras are reached over ROS 2:
 
 ```yaml
 robot_type: yam
-leaders: []                  # no YAM teleop yet: the arms are observed, never commanded
+leaders:
+  - type: keyboard           # end-effector keyboard teleop; leaders: [] only observes the arms
 followers:                   # one entry per arm, 1 or 2
-  - side: left
-  - side: right
+  - side: left               # reads /left/joint_states, commands /left/cmd_joint
+  - side: right              #   (override with joint_topic / command_topic)
 realsense_serials: []
 ros_cameras:
   - namespace: /camera/top            # no link: fixed in the world, exactly like a RealSense camera
@@ -93,16 +95,33 @@ ros_cameras:
     link: left_camera                 # moves with this URDF link
   - namespace: /camera/right_wrist
     link: right_camera
-ros_joint_topic: /joint_states
 ```
 
-- **Arms** are LeRobot robots (`lerobot_3d.robots.yam_follower.YamFollower`, registered as `yam_follower`) read from `ros_joint_topic`: `<side>_joint1..6` in radians, optional `<side>_joint7` finger travel in metres. Their observations use LeRobot's layout, `left_joint1.pos … left_joint6.pos, left_gripper.pos`. They're observe-only: `send_action` raises until a YAM teleop exists.
+- **Arms** are LeRobot robots (`lerobot_3d.robots.yam_follower.YamFollower`, registered as `yam_follower`). Each reads `sensor_msgs/JointState` from its `joint_topic` (`<side>_joint1..6` in radians, `<side>_gripper` as an opening from 0 closed to 1 open; a `<side>_joint7` finger travel in metres also works) and publishes `JointState` targets with the same names on its `command_topic`. Observations and actions use LeRobot's layout, `left_joint1.pos … left_joint6.pos, left_gripper.pos`, with the same units.
+- **Command safety**: the YAM rejects targets more than 0.35 rad from where a joint is, so `send_action` limits every command twice: targets move at most 1 rad/s (gripper: 1.5 openings/s) from the previous command, and never more than 0.3 rad from the measured joint. Tune with `YamFollowerConfig`'s `max_joint_speed_rad_s`, `max_gripper_speed`, `max_step_rad`.
 - **Cameras**: each `ros_cameras` entry reads `color/image_raw/compressed`, lossless `depth_raw/image_rect_raw/compressedDepth`, both `camera_info` topics, and the depth-to-color transform from `/tf_static`, all under its `namespace`; override any of them with `color_topic`, `depth_topic`, `color_info_topic`, `depth_info_topic`. Depth is registered to the color image every frame (about 40 ms per 640×480 camera), so if the driver can publish depth already aligned to color (the RealSense ROS driver's `align_depth`), point `depth_topic`/`depth_info_topic` at that and the registration is skipped. A camera is named after its namespace (`/camera/top` → `camera_top`) in calibration files and datasets. `ros_cameras` and `realsense_serials` can be mixed, and fixed ROS cameras also work with `robot_type: so101`.
 - **Wrist cameras** (`link` set) sit at their URDF camera link, recomputed every frame from the measured joints. That's their pose unless you calibrate them (see [Performing calibration](#performing-calibration)).
-- **No followers** shows both arms at the URDF rest pose (every joint 0) with no ROS needed: a quick way to look at the model.
-- **Recording** stores the measured joints as each frame's `action` (there is no teleop command yet), with both arms' joints and links merged into one dataset.
+- **No followers** gives virtual arms, with no ROS: shown at the URDF rest pose (every joint 0), or driven by the keyboard. `yam_preview.yaml` in the repo root is a ready keyboard config for the virtual arms; `yam_rig.yaml` drives the real arms.
+- **Keyboard teleop** (`leaders: [{type: keyboard}]`) moves the end effectors from the terminal running `lerobot-teleop` (it needs focus). With real arms it starts from their measured pose, so nothing moves until you press a key.
 
-The station URDF and its meshes are bundled under `src/lerobot_3d/calibration/yam/`, vendored from [I2RT](https://github.com/i2rt-robotics/i2rt) revision `120c3c81400171174604e503943f8d1ebc891058` (MIT, see `yam/LICENSE`) with only the mesh paths rewritten; `urdf_path` overrides it. ROS 2 (`rclpy`, `sensor_msgs`, `tf2_msgs`) comes from your ROS installation, not pip, and is only imported when a YAM arm or ROS camera is configured.
+  ```bash
+  lerobot-teleop --config yam_rig.yaml       # real arms (needs ROS 2, see below)
+  lerobot-teleop --config yam_preview.yaml   # virtual arms
+  ```
+
+  | Keys | Moves the active arm's end effector |
+  |------|------|
+  | `w`/`s`, `a`/`d`, `r`/`f` | ±x, ±y, ±z along the world axes (5 mm per press) |
+  | `i`/`k`, `j`/`l`, `u`/`o` | pitch, yaw, roll about the end effector's own axes (3° per press) |
+  | `g`/`h` | open/close the gripper (5% per press) |
+  | `Tab` / `0` | switch the active arm / ease it home to the rest pose |
+  | Shift | 4× steps |
+
+  IK (`lerobot_3d.point_clouds.yam_kinematics`) turns the targets into joint angles each step, within the URDF limits; a target the arm can't reach is pulled back to the closest pose it can, so holding a key against a limit doesn't wind up. The rest pose is folded against joint limits, so from there an arm can only move up (`r`) or forward (`w`). The viser **Home** button eases every arm back to the rest pose over 2 s (motion keys wait until it's done). It's a LeRobot teleoperator (`lerobot_3d.teleoperators.yam_keyboard.YamKeyboard`, registered as `yam_keyboard`), and the recording keys (Enter/Space/y/n) still work alongside it.
+- **Recording** stores what the arms were actually sent as each frame's `action` (or the measured joints when only observing), with both arms' joints and links merged into one dataset.
+- **ROS 2 Humble's `rclpy` is built for Python 3.10** (Ubuntu 22.04), so run YAM from a Python 3.10 environment with ROS sourced, e.g. `conda create -n lerobot_3d_ros python=3.10`, `pip install -e ".[realsense]"`, then `source /opt/ros/humble/setup.bash` (plus your `RMW_IMPLEMENTATION` / `CYCLONEDDS_URI` / `ROS_DOMAIN_ID`) before `lerobot-teleop`.
+
+The station URDF and its meshes are bundled under `src/lerobot_3d/calibration/yam/`, vendored from [I2RT](https://github.com/i2rt-robotics/i2rt) revision `120c3c81400171174604e503943f8d1ebc891058` (MIT, see `yam/LICENSE`) with only the mesh paths rewritten; `urdf_path` overrides it. ROS 2 (`rclpy`, `sensor_msgs`, `tf2_msgs`) comes from your ROS installation, not pip, and is only imported when a real YAM arm or a ROS camera is configured.
 
 See `src/teleop_config.yaml` for the full, annotated field list (recording, URDF/calibration overrides, camera stream, smoothing) and `lerobot_3d.teleop_config.TeleopSystemConfig` for the underlying dataclass.
 
@@ -205,7 +224,7 @@ Pushing again after recording more episodes re-uploads the changed files. Anyone
 6. Once every camera is done, all of them are shown together in color over the robot mesh, in a **Review / fine-tune merged result** panel. Pick a camera in the **Camera** dropdown and nudge it with the same buttons to line it up against the other cameras (**Reset** undoes that camera's nudges only). **Confirm** keeps the fine-tuned poses. **Abort** keeps the poses from step 5.
 7. The refined `extrinsic_calibration.json` is written back — ready for `lerobot-teleop`.
 
-**YAM specifics.** Capture needs live joints for both configured arms, writes both arms into `robot_pcd.npz` (densely sampled, in the station's world frame), and skips the follower homing step since the arms are observe-only. `icp.py` runs without RealSense installed; it only skips its live RealSense preview at the end.
+**YAM specifics.** Capture needs live joints for both configured arms, writes both arms into `robot_pcd.npz` (densely sampled, in the station's world frame), and skips the follower homing step. `icp.py` runs without RealSense installed; it only skips its live RealSense preview at the end.
 
 **Wrist cameras** (ROS cameras with a `link`) don't need an entry to start: they sit at their URDF camera link. Capture writes one for each, holding the current placement as ICP's starting `X_WC` plus the `link` and that link's pose at capture (`X_WL`), so a refined `X_WC` becomes a fixed mount offset, `inv(X_WL) @ X_WC`, that follows the arm at any joint angles. Calibrating them is optional. A wrist camera usually sees only the fingers, which gives ICP little to lock onto, so its auto-ICP result can slide off; accept it only if it visibly lines up better, otherwise **Abort** (keeps your manual alignment) or **Skip** the camera in the mask step to keep the URDF mount.
 

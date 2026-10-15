@@ -23,8 +23,8 @@ def station():
     return {side: YamRobotState(YAM_URDF_PATH, side) for side in ("left", "right")}
 
 
-def _obs(side, q=(0.2, 1.2, 1.5, 0.1, -0.2, 0.3), finger=0.02):
-    return {**{f"{side}_joint{i}.pos": v for i, v in enumerate(q, 1)}, f"{side}_gripper.pos": finger}
+def _obs(side, q=(0.2, 1.2, 1.5, 0.1, -0.2, 0.3), opening=0.4):
+    return {**{f"{side}_joint{i}.pos": v for i, v in enumerate(q, 1)}, f"{side}_gripper.pos": opening}
 
 
 def test_station_mesh_poses_match_direct_urdf_fk(station):
@@ -33,7 +33,7 @@ def test_station_mesh_poses_match_direct_urdf_fk(station):
         assert list(observation) == joint_keys(side) == state.keys
         joints = state.get_joint_positions(observation)
         assert [joints[f"{side}_joint{i}"] for i in range(1, 7)] == [0.2, 1.2, 1.5, 0.1, -0.2, 0.3]
-        assert joints[f"{side}_joint7"] == joints[f"{side}_joint8"] == 0.02  # metres of travel
+        assert joints[f"{side}_joint7"] == joints[f"{side}_joint8"] == pytest.approx(0.4 * 0.04695)  # 0..1 -> m
         snapshot = state.get_robot_snapshot(observation, index=3, base_offset=np.ones(3))
         assert snapshot.index == 3 and snapshot.joint_positions == observation
         base = state.get_link_transform(observation, side + "_base")
@@ -61,9 +61,9 @@ def test_rest_pose_is_all_zero_and_within_limits(station):
 def test_noise_at_limits_is_clipped_but_bad_mapping_is_rejected(station):
     state = station["left"]
     # Rest sits on joint 3's lower limit (0); encoder noise just below it is clipped, not rejected.
-    joints = state.get_joint_positions({**_obs("left"), "left_joint3.pos": -0.01, "left_gripper.pos": 0.0471})
+    joints = state.get_joint_positions({**_obs("left"), "left_joint3.pos": -0.01, "left_gripper.pos": 1.04})
     assert joints["left_joint3"] == 0.0 and joints["left_joint7"] == pytest.approx(0.04695)
-    for bad in ({"left_joint1.pos": 20.0}, {"left_joint2.pos": np.nan}, {"left_gripper.pos": 0.2}):
+    for bad in ({"left_joint1.pos": 20.0}, {"left_joint2.pos": np.nan}, {"left_gripper.pos": 1.5}):
         with pytest.raises(ValueError):
             state.get_robot_snapshot({**_obs("left"), **bad})
     with pytest.raises(ValueError, match="missing"):

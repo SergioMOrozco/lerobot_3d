@@ -14,6 +14,7 @@ from lerobot_3d.point_clouds.system_vis import SystemStateViewer
 from lerobot_3d.recording.dataset_recorder import LeRobotDatasetRecorder
 from lerobot_3d.recording.episode_controller import EpisodeController, EpisodeState
 from lerobot_3d.recording.keyboard import TerminalKeyListener
+from lerobot_3d.teleoperators.yam_keyboard import KEYBOARD_HELP
 
 _OVERRUN_WARN_INTERVAL_S = 5.0
 
@@ -45,10 +46,26 @@ class TeleopPointCloudSystem:
 
     def __init__(self, config: TeleopSystemConfig):
         self.config = config
-        self.leaders = [
-            SO101Leader(SO101LeaderConfig(port=ax.port, id=ax.id)) for ax in config.leaders
-        ]
+        if config.robot_type == "yam":
+            from lerobot_3d.teleoperators.yam_keyboard import YamKeyboard, YamKeyboardConfig
+
+            self.leaders = [
+                YamKeyboard(YamKeyboardConfig(sides=config.yam_sides, urdf_path=config.urdf_path, id="yam_keyboard"))
+                for _ in config.leaders
+            ]
+        else:
+            self.leaders = [
+                SO101Leader(SO101LeaderConfig(port=ax.port, id=ax.id)) for ax in config.leaders
+            ]
         self.viewer = SystemStateViewer(config)
+        if config.robot_type == "yam" and self.leaders:
+            home_button = self.viewer.viewer.server.gui.add_button("Home", hint="Ease every arm back to its rest pose")
+            # Clicks arrive on viser's thread; the control loop applies them in step().
+            self._home_requested = False
+
+            @home_button.on_click
+            def _on_home(_) -> None:
+                self._home_requested = True
         self.last_actions: list[dict] | None = None
         """Actions used by the most recent :meth:`step` (from the leaders or the caller)."""
 
@@ -58,6 +75,10 @@ class TeleopPointCloudSystem:
         print("Connecting devices...")
         for leader in self.leaders:
             leader.connect()
+        if self.config.robot_type == "yam" and self.viewer.yam_followers:
+            # Start the keyboard from where the real arms are, so the first command doesn't move them.
+            for follower in self.viewer.followers:
+                self.leaders[0].set_joints(follower.get_observation())
         print("Connected.")
 
     def step(
@@ -95,17 +116,14 @@ class TeleopPointCloudSystem:
                 ``joint_positions``, ``joint_radians``, ``pcd``, ``link_pcds``,
                 ``link_poses`` (base frame) and the viser grid ``base_offset``.
 
-        With observe-only YAM followers, omit ``action``: the arms are read, not commanded, and
-        their measured joints become :attr:`last_actions` (what a dataset records as the action).
+        With real YAM arms (followers) and no keyboard or ``action``, the arms are only read, and their
+        measured joints become :attr:`last_actions` (what a dataset records as the action). With an
+        action, :attr:`last_actions` is what the arms were actually sent, after their speed limits.
 
         Poll ``self.viewer.quit`` to know when to stop the outer loop, then call :meth:`close`.
         """
-        if self.viewer.observe_only:
-            if action is not None:
-                raise ValueError("YAM followers are observe-only (no YAM teleop yet); call step() with no action.")
-            result = self.viewer.update(masks_by_serial=masks_by_serial)
-            self.last_actions = [dict(snapshot.joint_positions) for snapshot in result[4]]
-            return result
+        if self.config.robot_type == "yam":
+            return self._step_yam(action, masks_by_serial)
         if action is not None:
             actions = action
         elif not self.leaders:
@@ -120,6 +138,29 @@ class TeleopPointCloudSystem:
             actions = [self.leaders[0].get_action()]
         self.last_actions = list(actions)
         return self.viewer.update(*actions, masks_by_serial=masks_by_serial)
+
+    def _step_yam(self, action, masks_by_serial):
+        if action is not None:
+            actions = list(action)
+        elif self.leaders:
+            # One keyboard drives every arm; split its action into one per arm.
+            if self._home_requested:
+                self._home_requested = False
+                self.leaders[0].home()
+            merged = self.leaders[0].get_action()
+            actions = [{key: merged[key] for key in state.keys} for state in self.viewer.robot_states]
+        elif self.viewer.yam_followers:
+            actions = []  # observe only
+        else:
+            raise ValueError("No YAM arms or keyboard: call step(action) with one action dict per virtual arm.")
+        result = self.viewer.update(*actions, masks_by_serial=masks_by_serial)
+        if not self.viewer.yam_followers:
+            self.last_actions = actions
+        elif actions:
+            self.last_actions = self.viewer.sent_actions
+        else:
+            self.last_actions = [dict(snapshot.joint_positions) for snapshot in result[4]]
+        return result
 
     def close(self) -> None:
         """Release cameras, robots, and recording resources."""
@@ -172,20 +213,29 @@ def main() -> None:
 
     system = TeleopPointCloudSystem(config)
     system.connect()
-    # YAM with no followers: no hardware to read, so show the arms at the URDF rest pose.
+    keyboard = system.leaders[0] if config.robot_type == "yam" and system.leaders else None
+    # YAM with no followers and no keyboard: nothing moves the arms, so show the URDF rest pose.
     preview_actions = (
-        system.viewer.rest_actions() if config.robot_type == "yam" and not config.followers else None
+        system.viewer.rest_actions()
+        if config.robot_type == "yam" and not config.followers and keyboard is None
+        else None
     )
 
     hz = config.dataset_fps if recording else args.hz
     period_s = None if hz is None or hz <= 0 else 1.0 / hz
     last_overrun_warning = float("-inf")
     try:
-        with TerminalKeyListener() if recording else contextlib.nullcontext() as keys:
+        with TerminalKeyListener() if recording or keyboard else contextlib.nullcontext() as keys:
+            if keyboard is not None:
+                status_line.log(f"[keyboard] {KEYBOARD_HELP}")
             if controller is not None:
                 controller.print_help()
             while not system.viewer.quit:
                 t_iter_start = time.monotonic()
+                # The keyboard teleop takes its keys before the step; the rest go to the recorder.
+                pressed = keys.get_keys() if keys is not None else []
+                if keyboard is not None:
+                    pressed = keyboard.handle_keys(pressed)
                 datapoints, _scene_pcd, _robot_pcds, _robot_link_pcds, snapshots = system.step(preview_actions)
 
                 if controller is not None:
@@ -194,7 +244,7 @@ def main() -> None:
                     # Only the step + frame capture set the recorded rate; saving an episode
                     # (video encoding) happens between episodes and is excluded.
                     capture_elapsed = time.monotonic() - t_iter_start
-                    for key in keys.get_keys():
+                    for key in pressed:
                         controller.handle_key(key)
                     system.viewer.viewer.set_status(controller.status_text())
                     if controller.state is EpisodeState.RECORDING:
@@ -211,6 +261,12 @@ def main() -> None:
                             f"the {period_s * 1000:.0f} ms budget for dataset_fps={hz}; recorded "
                             "timestamps assume a fixed rate. Lower dataset_fps or camera settings."
                         )
+
+                if keyboard is not None:
+                    status = keyboard.status_text()
+                    if controller is not None:
+                        status += "  |  " + controller.status_text()
+                    system.viewer.viewer.set_status(status)
 
                 if period_s is not None:
                     elapsed = time.monotonic() - t_iter_start

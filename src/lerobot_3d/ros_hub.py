@@ -4,9 +4,12 @@ One node serves every consumer in the process: each :class:`~lerobot_3d.robots.y
 arm and each ROS camera asks :func:`ros_hub` for what it needs, and subscriptions are made once.
 Only the latest sample (and its arrival time) is kept per topic, so consumers can judge staleness.
 
-Joints: ``sensor_msgs/JointState`` with the YAM station URDF names (``<side>_joint1..6`` in radians,
-optional ``<side>_joint7`` finger travel in metres). Cameras: per namespace, compressed color and
-lossless compressed depth, both ``camera_info`` topics, and depth->color extrinsics from ``/tf_static``.
+Joints: ``sensor_msgs/JointState`` per arm (e.g. ``/left/joint_states``) with the YAM station URDF names:
+``<side>_joint1..6`` in radians and ``<side>_gripper`` as an opening from 0 (closed) to 1 (open); a
+``<side>_joint7`` finger travel in metres is accepted instead. Commands go out the same way, as a
+``JointState`` on the arm's command topic (e.g. ``/left/cmd_joint``). Cameras: per namespace, compressed
+color and lossless compressed depth, both ``camera_info`` topics, and depth->color extrinsics from
+``/tf_static``.
 
 ``rclpy`` is imported only when the hub is first created, so nothing here needs ROS installed
 until a YAM robot or ROS camera is actually configured.
@@ -28,23 +31,32 @@ from lerobot_3d.teleop_config import (
     YAM_SIDES,
 )
 
+YAM_FINGER_TRAVEL_M = 0.04695
+"""Full linear_4310 finger travel (the station URDF's ``<side>_joint7`` upper limit), for converting a
+``<side>_joint7`` reading in metres to a 0..1 opening."""
+
 
 def joint_observation(names, positions, side: str) -> tuple[dict[str, float], bool] | None:
     """``JointState`` names/positions -> one YAM arm's observation, or ``None`` if it's absent.
 
     Returns ``(observation, gripper_reported)`` with ``observation`` keyed like a LeRobot robot:
-    ``"<side>_joint1.pos" .. "<side>_joint6.pos"`` (radians) and ``"<side>_gripper.pos"`` (finger
-    travel in metres). Without a ``<side>_joint7`` entry the gripper reads closed (``0.0``) and
-    ``gripper_reported`` is False.
+    ``"<side>_joint1.pos" .. "<side>_joint6.pos"`` (radians) and ``"<side>_gripper.pos"`` (opening,
+    0 closed .. 1 open) from ``<side>_gripper``, or else from ``<side>_joint7`` metres. With neither,
+    the gripper reads closed (``0.0``) and ``gripper_reported`` is False.
     """
     by_name = dict(zip(names, positions))
     arm = [f"{side}_joint{i}" for i in range(1, 7)]
     if not all(n in by_name for n in arm):
         return None
     observation = {f"{n}.pos": float(by_name[n]) for n in arm}
-    finger = by_name.get(f"{side}_joint7")
-    observation[f"{side}_gripper.pos"] = 0.0 if finger is None else float(finger)
-    return observation, finger is not None
+    if f"{side}_gripper" in by_name:
+        opening = float(by_name[f"{side}_gripper"])
+    elif f"{side}_joint7" in by_name:
+        opening = float(by_name[f"{side}_joint7"]) / YAM_FINGER_TRAVEL_M
+    else:
+        opening = None
+    observation[f"{side}_gripper.pos"] = 0.0 if opening is None else opening
+    return observation, opening is not None
 
 
 def tf_matrix(translation, rotation_xyzw) -> np.ndarray:
@@ -131,6 +143,7 @@ class RosHub:
         self._cameras: dict[str, CameraFrame] = {}
         self._tf_edges: dict[tuple[str, str], np.ndarray] = {}
         self._tf_subscribed = False
+        self._publishers: dict[str, object] = {}
 
         self.node = rclpy.create_node("lerobot_3d")
         self._executor = SingleThreadedExecutor()
@@ -184,6 +197,20 @@ class RosHub:
                 CameraInfo, f"{ns}/{color_info_topic}", lambda m: self._on_info(ns, m, "color"), sensor_qos)
             self.node.create_subscription(
                 CameraInfo, f"{ns}/{depth_info_topic}", lambda m: self._on_info(ns, m, "depth"), sensor_qos)
+
+    def publish_joint_command(self, topic: str, names, positions) -> None:
+        """Publish a ``sensor_msgs/JointState`` command (names + positions only) on ``topic``."""
+        from sensor_msgs.msg import JointState
+
+        with self._spin_lock:
+            publisher = self._publishers.get(topic)
+            if publisher is None:
+                publisher = self._publishers[topic] = self.node.create_publisher(JointState, topic, 10)
+        msg = JointState()
+        msg.header.stamp = self.node.get_clock().now().to_msg()
+        msg.name = list(names)
+        msg.position = [float(p) for p in positions]
+        publisher.publish(msg)
 
     # --- callbacks (spin thread) ----------------------------------------------------------------
     def _spin(self) -> None:

@@ -5,8 +5,10 @@ Edit that file (or point ``--config`` / ``LEROBOT_3D_TELEOP_CONFIG`` at your own
 to change hardware wiring or run settings; no code changes needed.
 
 ``robot_type`` picks the robot: ``so101`` (default) or ``yam``. For ``yam``, ``followers`` lists the
-station's arms by ``side`` (``left``/``right``); they're read over ROS 2 and observe-only, since there
-is no YAM teleop yet, so ``leaders`` must be empty.
+station's arms by ``side`` (``left``/``right``), read and commanded over ROS 2 (``/<side>/joint_states``,
+``/<side>/cmd_joint`` by default). The one YAM leader is a keyboard (``leaders: [{type: keyboard}]``)
+that moves the end effectors: of the real arms with followers, of virtual arms without. With followers
+and no leader, the real arms are only observed.
 
 Cameras: ``realsense_serials`` (USB RealSense) and ``ros_cameras`` (ROS 2 topics) may be mixed. A ROS
 camera without a ``link`` is fixed in the world like a RealSense one; with a ``link`` (YAM only) it
@@ -57,10 +59,21 @@ class SO101AxisConfig:
 
 @dataclass(frozen=True)
 class YamArmConfig:
-    """One arm of the YAM station, read over ROS 2."""
+    """One arm of the YAM station, read and commanded over ROS 2."""
 
     side: str
     """``left`` or ``right``: the station URDF's joint/link name prefix."""
+    joint_topic: str | None = None
+    """``sensor_msgs/JointState`` the arm is read from; ``None`` -> ``/<side>/joint_states``."""
+    command_topic: str | None = None
+    """``sensor_msgs/JointState`` targets are published to; ``None`` -> ``/<side>/cmd_joint``."""
+
+
+@dataclass(frozen=True)
+class YamLeaderConfig:
+    """A YAM teleop device. Only ``keyboard`` exists: end-effector control from the terminal."""
+
+    type: str = "keyboard"
 
 
 @dataclass(frozen=True)
@@ -84,10 +97,15 @@ def _yam_arm_configs(entries: Sequence[Mapping[str, Any]]) -> tuple[YamArmConfig
     arms = []
     for i, entry in enumerate(entries):
         try:
-            arms.append(YamArmConfig(side=str(entry["side"])))
+            arms.append(YamArmConfig(side=str(entry["side"]), joint_topic=entry.get("joint_topic"),
+                                     command_topic=entry.get("command_topic")))
         except KeyError as e:
             raise ValueError(f"{DEFAULT_TELEOP_CONFIG_YAML}: followers[{i}] missing required field {e}") from e
     return tuple(arms)
+
+
+def _yam_leader_configs(entries: Sequence[Mapping[str, Any]]) -> tuple[YamLeaderConfig, ...]:
+    return tuple(YamLeaderConfig(type=str(entry.get("type", "keyboard"))) for entry in entries)
 
 
 def _ros_camera_configs(entries: Sequence[Mapping[str, Any]]) -> tuple[RosCameraConfig, ...]:
@@ -169,15 +187,13 @@ class TeleopSystemConfig:
     ``robot_calibration_paths`` if set, else the first leader's LeRobot calibration.
     """
 
-    leaders: tuple[SO101AxisConfig, ...]
+    leaders: tuple[SO101AxisConfig, ...] | tuple[YamLeaderConfig, ...]
     followers: tuple[SO101AxisConfig, ...] | tuple[YamArmConfig, ...]
     realsense_serials: tuple[str, ...]
     robot_type: str = "so101"
     """``so101`` or ``yam``; decides what ``followers`` entries are and which URDF is used."""
     ros_cameras: tuple[RosCameraConfig, ...] = ()
     """RGB-D cameras read from ROS 2 topics (any robot type; ``link`` needs ``yam``)."""
-    ros_joint_topic: str = "/joint_states"
-    """``sensor_msgs/JointState`` topic the YAM arms are read from."""
     extrinsic_json: str = "extrinsic_calibration.json"
     urdf_path: str | None = None
     """``None`` → the bundled URDF for ``robot_type`` under package ``calibration/``."""
@@ -313,7 +329,10 @@ class TeleopSystemConfig:
 
     def _validate_yam(self) -> None:
         if self.leaders:
-            raise ValueError("robot_type: yam has no teleop yet; leaders must be empty (the arms are observed).")
+            if len(self.leaders) > 1 or not all(
+                isinstance(leader, YamLeaderConfig) and leader.type == "keyboard" for leader in self.leaders
+            ):
+                raise ValueError("robot_type: yam supports one leader, {type: keyboard}.")
         if self.num_robots != 1:
             raise ValueError("num_robots is for SO101 virtual robots; list YAM arms under followers instead.")
         sides = [arm.side for arm in self.followers]
@@ -345,11 +364,13 @@ def load_teleop_system_config(path: str | Path | None = None) -> TeleopSystemCon
     kwargs = {k: v for k, v in data.items() if k in known_fields and v is not None}
 
     followers = data.get("followers") or []
+    yam = data.get("robot_type") == "yam"
+    leaders = data.get("leaders") or []
     return TeleopSystemConfig(
-        leaders=_axis_configs(data.get("leaders") or [], key="leaders"),
+        leaders=_yam_leader_configs(leaders) if yam else _axis_configs(leaders, key="leaders"),
         followers=(
             _yam_arm_configs(followers)
-            if data.get("robot_type") == "yam"
+            if yam
             else _axis_configs(followers, key="followers")
         ),
         realsense_serials=tuple(str(s) for s in data.get("realsense_serials") or []),

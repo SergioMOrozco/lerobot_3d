@@ -104,15 +104,18 @@ class SystemStateViewer:
             from lerobot_3d.robots.yam_follower import YamFollower, YamFollowerConfig
 
             self.followers = [
-                YamFollower(YamFollowerConfig(side=arm.side, id=f"yam_{arm.side}", joint_topic=config.ros_joint_topic))
+                YamFollower(YamFollowerConfig(side=arm.side, id=f"yam_{arm.side}", joint_topic=arm.joint_topic,
+                                              command_topic=arm.command_topic))
                 for arm in config.followers
             ]
         else:
             self.followers = [
                 SO101Follower(SO101FollowerConfig(port=ax.port, id=ax.id)) for ax in config.followers
             ]
-        self.observe_only = config.robot_type == "yam" and bool(self.followers)
-        """YAM followers are read, never commanded (no YAM teleop yet): ``update()`` takes no actions."""
+        self.yam_followers = config.robot_type == "yam" and bool(self.followers)
+        """Real YAM arms: every one is read each update, and commanded when ``update()`` gets actions."""
+        self.sent_actions: list[dict] | None = None
+        """What the YAM followers were actually sent in the last ``update()`` (after their speed limits)."""
 
         self.segment_on_capture = config.segment_on_capture
         self._segmenter = RobotSegmenter(config.sam2_model_id)
@@ -128,7 +131,7 @@ class SystemStateViewer:
             for bot in self.followers:
                 bot.connect()
             print("Connected.")
-            if not self.observe_only:
+            if not self.yam_followers:
                 self._home_actions = self._read_follower_positions()
                 if self.action_interpolation_duration_s > 0:
                     self._start_action_thread()
@@ -224,9 +227,11 @@ class SystemStateViewer:
         if self.viewer.quit:
             self.quit = True
 
-        if self.observe_only:
-            if actions:
-                raise ValueError("YAM followers are observe-only (no YAM teleop yet); call update() with no actions.")
+        if self.yam_followers:
+            # No actions: just observe. Actions: command every arm, then observe.
+            if actions and len(actions) != len(self.followers):
+                raise ValueError(f"Expected {len(self.followers)} actions (one per YAM arm), got {len(actions)}")
+            self.sent_actions = [f.send_action(a) for f, a in zip(self.followers, actions)] if actions else None
             observations = [follower.get_observation() for follower in self.followers]
         elif len(actions) != (expected := len(self.followers) if self.followers else self.num_robots):
             raise ValueError(f"Expected {expected} actions, got {len(actions)}")

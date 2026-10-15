@@ -1,0 +1,13 @@
+# YAM keyboard teleop: drive both virtual arms' end effectors from the terminal, no hardware or ROS.
+#   lerobot-teleop --config yam_keyboard.yaml
+# Keys (the terminal running lerobot-teleop needs focus):
+#   w/s: +x/-x  a/d: +y/-y  r/f: +z/-z  i/k: pitch  j/l: yaw  u/o: roll
+#   g/h: gripper open/close  Tab: switch arm  0: home arm  Shift: 4x
+# The arms start folded at the URDF rest pose, so move up (r) or forward (w) first.
+robot_type: yam
+leaders:
+  - type: keyboard
+followers: []
+realsense_serials: []
+ros_cameras: []
+viser_port: 8080

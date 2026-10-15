@@ -16,10 +16,10 @@ def transform_points(matrix, points):
     return np.einsum("ij,nj->ni", matrix[:3, :3], points) + matrix[:3, 3]
 
 
-LIMIT_SLACK = (0.2, 0.005)
-"""Beyond-limit slack (radians for arm joints, metres for finger travel) treated as sensor noise and
-clipped. Rest sits exactly on some lower limits (joints 2 and 3 at 0), so measured noise lands just
-past them. Anything further out means the joint mapping is wrong and raises."""
+LIMIT_SLACK = (0.2, 0.1)
+"""Beyond-limit slack (radians for arm joints, fraction of full opening for the gripper) treated as
+sensor noise and clipped. Rest sits exactly on some lower limits (joints 2 and 3 at 0), so measured
+noise lands just past them. Anything further out means the joint mapping is wrong and raises."""
 
 
 def joint_keys(side: str) -> list[str]:
@@ -31,8 +31,8 @@ class YamRobotState:
     """FK and mesh sampling for one arm of I2RT's composed YAM station URDF.
 
     Observations are keyed like a LeRobot robot (see :func:`joint_keys`): ``<side>_joint1..6.pos``
-    in radians and ``<side>_gripper.pos`` as finger travel in metres, which drives both
-    linear_4310 fingers. Base and camera placements are exactly those in the URDF, so snapshots are
+    in radians and ``<side>_gripper.pos`` as the gripper opening, 0 closed to 1 fully open (the YAM's own
+    ``<side>_gripper`` command convention), which drives both linear_4310 fingers. Base and camera placements are exactly those in the URDF, so snapshots are
     placed at the arm's station pose rather than on a grid.
     """
 
@@ -80,16 +80,19 @@ class YamRobotState:
             values = [float(observation[key]) for key in self.keys]
         except KeyError as e:
             raise ValueError(f"YAM {self.side} observation is missing {e}") from e
-        values.append(values[-1])  # both fingers travel together
         out = {}
-        for i, (joint, value) in enumerate(zip(self.joints, values)):
-            slack = LIMIT_SLACK[int(i >= 6)]
-            if not np.isfinite(value) or not joint.limit.lower - slack <= value <= joint.limit.upper + slack:
+        for joint, value in zip(self.joints[:6], values[:6]):
+            lower, upper = joint.limit.lower, joint.limit.upper
+            if not np.isfinite(value) or not lower - LIMIT_SLACK[0] <= value <= upper + LIMIT_SLACK[0]:
                 raise ValueError(
-                    f"{joint.name}={value} is outside the URDF limits "
-                    f"[{joint.limit.lower}, {joint.limit.upper}]; check the joint mapping"
+                    f"{joint.name}={value} is outside the URDF limits [{lower}, {upper}]; check the joint mapping"
                 )
-            out[joint.name] = float(np.clip(value, joint.limit.lower, joint.limit.upper))
+            out[joint.name] = float(np.clip(value, lower, upper))
+        opening = values[6]
+        if not np.isfinite(opening) or not -LIMIT_SLACK[1] <= opening <= 1 + LIMIT_SLACK[1]:
+            raise ValueError(f"{self.side}_gripper={opening} is outside the 0 (closed) .. 1 (open) range")
+        for joint in self.joints[6:]:  # both fingers travel together
+            out[joint.name] = float(np.clip(opening, 0.0, 1.0) * joint.limit.upper)
         return out
 
     def get_static_meshes(self):

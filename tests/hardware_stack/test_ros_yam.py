@@ -21,7 +21,13 @@ from lerobot_3d.point_clouds.rgbd import (
     register_depth_to_color,
     sample_colors,
 )
-from lerobot_3d.ros_hub import ArmSample, CameraFrame, joint_observation, lookup_transform
+from lerobot_3d.ros_hub import (
+    YAM_FINGER_TRAVEL_M,
+    ArmSample,
+    CameraFrame,
+    joint_observation,
+    lookup_transform,
+)
 from lerobot_3d.teleop_config import RosCameraConfig, TeleopSystemConfig, YamArmConfig
 
 pytestmark = pytest.mark.hardware_stack
@@ -87,15 +93,17 @@ def test_decode_ros_compressed_formats():
     assert tuple(rgb[0, 0]) == (255, 0, 0)
 
 
-def test_joint_observation_uses_lerobot_keys_and_finger_travel_in_metres():
-    names = [f"left_joint{i}" for i in range(1, 9)] + [f"right_joint{i}" for i in range(1, 7)]
-    positions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.02, 0.02, 1, 2, 3, 4, 5, 6]
+def test_joint_observation_uses_lerobot_keys_and_a_0_to_1_gripper():
+    names = [f"left_joint{i}" for i in range(1, 7)] + ["left_gripper"] + [f"right_joint{i}" for i in range(1, 8)]
+    positions = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.5, 1, 2, 3, 4, 5, 6, YAM_FINGER_TRAVEL_M / 4]
     left, reported = joint_observation(names, positions, "left")
     assert reported and left == {"left_joint1.pos": 0.1, "left_joint2.pos": 0.2, "left_joint3.pos": 0.3,
                                  "left_joint4.pos": 0.4, "left_joint5.pos": 0.5, "left_joint6.pos": 0.6,
-                                 "left_gripper.pos": 0.02}
-    right, reported = joint_observation(names, positions, "right")
-    assert not reported and right["right_gripper.pos"] == 0.0
+                                 "left_gripper.pos": 0.5}
+    right, reported = joint_observation(names, positions, "right")  # joint7 metres -> opening
+    assert reported and right["right_gripper.pos"] == pytest.approx(0.25)
+    none, reported = joint_observation(names[:6], positions[:6], "left")
+    assert not reported and none["left_gripper.pos"] == 0.0
     assert joint_observation(names[:3], positions[:3], "left") is None
 
 
@@ -134,7 +142,10 @@ class FakeHub:
 
     def __init__(self, arms, cameras):
         self.arms, self.cameras = arms, cameras
-        self.joint_topics, self.watched = set(), []
+        self.joint_topics, self.watched, self.published = set(), [], []
+
+    def publish_joint_command(self, topic, names, positions):
+        self.published.append((topic, list(names), [float(p) for p in positions]))
 
     def watch_joints(self, topic):
         self.joint_topics.add(topic)
@@ -180,13 +191,14 @@ def yam_config(tmp_path, monkeypatch):
                                       "044322073544": {"X_WC": np.eye(4).tolist()}}))
 
     def make(**overrides):
-        kwargs = dict(
-            leaders=(), followers=(YamArmConfig("left"), YamArmConfig("right")), realsense_serials=(),
-            robot_type="yam",
-            ros_cameras=(RosCameraConfig("/camera/top"), RosCameraConfig("/camera/left_wrist", link="left_camera"),
-                         RosCameraConfig("/camera/right_wrist", link="right_camera")),
-            extrinsic_json=str(extrinsics), viser_port=_free_port(), segment_on_capture=False,
-        )
+        kwargs = {
+            "leaders": (), "followers": (YamArmConfig("left"), YamArmConfig("right")), "realsense_serials": (),
+            "robot_type": "yam",
+            "ros_cameras": (RosCameraConfig("/camera/top"),
+                            RosCameraConfig("/camera/left_wrist", link="left_camera"),
+                            RosCameraConfig("/camera/right_wrist", link="right_camera")),
+            "extrinsic_json": str(extrinsics), "viser_port": _free_port(), "segment_on_capture": False,
+        }
         kwargs.update(overrides)
         return TeleopSystemConfig(**kwargs)
 
@@ -198,20 +210,48 @@ def _fk(viewer, side, link, q):
     return state.get_link_transform(_arm(side, q).observation, link)
 
 
-def test_yam_follower_is_an_observe_only_lerobot_robot(hub):
+def test_yam_follower_is_a_lerobot_robot_read_and_commanded_over_ros(hub, monkeypatch):
     from lerobot.robots.config import RobotConfig
 
+    from lerobot_3d.robots import yam_follower
     from lerobot_3d.robots.yam_follower import YamFollower, YamFollowerConfig
 
     assert RobotConfig.get_choice_class("yam_follower") is YamFollowerConfig
-    robot = YamFollower(YamFollowerConfig(side="right", id="yam_right"))
-    assert list(robot.observation_features) == [f"right_joint{i}.pos" for i in range(1, 7)] + ["right_gripper.pos"]
+    config = YamFollowerConfig(side="right", id="yam_right")
+    assert (config.joint_topic, config.command_topic) == ("/right/joint_states", "/right/cmd_joint")
+    robot = YamFollower(config)
+    keys = [f"right_joint{i}.pos" for i in range(1, 7)] + ["right_gripper.pos"]
+    assert list(robot.observation_features) == keys == list(robot.action_features)
     robot.connect()
+    assert hub.joint_topics == {"/right/joint_states"}
     assert robot.is_connected and robot.is_calibrated
-    assert robot.get_observation() == hub.arms["right"].observation
-    with pytest.raises(NotImplementedError, match="observe-only"):
-        robot.send_action(hub.arms["right"].observation)
+    measured = hub.arms["right"].observation
+    assert robot.get_observation() == measured
 
+    clock, real_monotonic = [10.0], yam_follower.time.monotonic
+    monkeypatch.setattr(yam_follower.time, "monotonic", lambda: clock[0])
+    far = {**measured, "right_joint1.pos": measured["right_joint1.pos"] + 1.0, "right_gripper.pos": 2.0}
+    sent = robot.send_action(far)  # first command: no elapsed time, so it holds the measured pose
+    assert sent == pytest.approx({**measured, "right_gripper.pos": measured["right_gripper.pos"]})
+    topic, names, positions = hub.published[-1]
+    assert topic == "/right/cmd_joint"
+    assert names == [f"right_joint{i}" for i in range(1, 7)] + ["right_gripper"]
+    assert positions == pytest.approx([sent[k] for k in keys])
+
+    clock[0] += 0.05  # 1 rad/s * 50 ms
+    sent = robot.send_action(far)
+    assert sent["right_joint1.pos"] == pytest.approx(measured["right_joint1.pos"] + 0.05)
+    assert sent["right_gripper.pos"] == pytest.approx(measured["right_gripper.pos"] + 0.075)
+    for _ in range(20):  # the arm isn't moving: commands never get further than max_step_rad from it
+        clock[0] += 0.1
+        sent = robot.send_action(far)
+    assert sent["right_joint1.pos"] == pytest.approx(measured["right_joint1.pos"] + 0.3)
+    assert sent["right_gripper.pos"] == 1.0  # opening clipped to 0..1
+    with pytest.raises(ValueError, match="missing"):
+        robot.send_action({"right_joint1.pos": 0.0})
+
+    # The frozen clock patched the time module itself; connect()'s timeout needs it running again.
+    monkeypatch.setattr(yam_follower.time, "monotonic", real_monotonic)
     del hub.arms["right"]
     with pytest.raises(ConnectionError, match="right_joint1..6"):
         YamFollower(YamFollowerConfig(side="right", id="yam_right", connect_timeout_s=0.1)).connect()
@@ -234,8 +274,12 @@ def test_viewer_observes_both_arms_and_places_fixed_and_wrist_cameras(hub, yam_c
         dp = by_name["camera_top"]
         assert dp.depth_scale == 0.001 and dp.color_intrinsics.fx == 400.0
         assert dp.joint_positions == {**hub.arms["left"].observation, **hub.arms["right"].observation}
-        with pytest.raises(ValueError, match="observe-only"):
-            viewer.update(hub.arms["left"].observation, hub.arms["right"].observation)
+        assert viewer.sent_actions is None and hub.published == []  # no actions: observe only
+        target = {**hub.arms["left"].observation}
+        viewer.update(target, hub.arms["right"].observation)  # actions: command both arms
+        assert [topic for topic, _, _ in hub.published] == ["/left/cmd_joint", "/right/cmd_joint"]
+        assert viewer.sent_actions == [pytest.approx(hub.arms["left"].observation),
+                                       pytest.approx(hub.arms["right"].observation)]
     finally:
         viewer.close()
 
@@ -342,8 +386,35 @@ def test_yam_without_followers_previews_the_rest_pose_without_ros(monkeypatch, y
     monkeypatch.setattr(ros_hub_module, "RosHub", lambda: pytest.fail("ROS must not start"))
     viewer = SystemStateViewer(yam_config(followers=(), ros_cameras=()))
     try:
-        assert not viewer.observe_only and len(viewer.robot_states) == 2
+        assert not viewer.yam_followers and len(viewer.robot_states) == 2
         _, _, _, _, snapshots = viewer.update(*viewer.rest_actions())
         assert [s.joint_positions for s in snapshots] == [s.rest_observation() for s in viewer.robot_states]
     finally:
         viewer.close()
+
+
+def test_keyboard_commands_the_real_arms_starting_from_their_measured_pose(hub, yam_config, monkeypatch):
+    from lerobot_3d.control.teleop import TeleopPointCloudSystem
+    from lerobot_3d.robots import yam_follower
+    from lerobot_3d.teleop_config import YamLeaderConfig
+
+    clock = [50.0]
+    monkeypatch.setattr(yam_follower.time, "monotonic", lambda: clock[0])
+    system = TeleopPointCloudSystem(yam_config(leaders=(YamLeaderConfig(),), ros_cameras=()))
+    try:
+        system.connect()
+        system.step()  # the keyboard starts at the measured pose, so nothing moves
+        assert system.last_actions == [pytest.approx(hub.arms["left"].observation, abs=1e-6),
+                                       pytest.approx(hub.arms["right"].observation, abs=1e-6)]
+        assert [topic for topic, _, _ in hub.published] == ["/left/cmd_joint", "/right/cmd_joint"]
+
+        system.leaders[0].handle_keys(["W", "g"])  # left arm: 2 cm forward, open a bit
+        clock[0] += 1.0
+        system.step()
+        left_sent = system.last_actions[0]
+        assert list(left_sent.values()) == pytest.approx(hub.published[-2][2])  # recorded == published
+        assert left_sent["left_gripper.pos"] == pytest.approx(hub.arms["left"].observation["left_gripper.pos"] + 0.05)
+        assert any(abs(left_sent[k] - v) > 1e-4 for k, v in hub.arms["left"].observation.items())
+        assert system.last_actions[1] == pytest.approx(hub.arms["right"].observation, abs=1e-6)  # untouched
+    finally:
+        system.close()

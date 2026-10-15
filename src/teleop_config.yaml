@@ -5,10 +5,11 @@
 robot_type: so101
 
 # --- robot_type: yam -- replace leaders/followers/cameras below with, e.g.:
-# leaders: []                     # no YAM teleop yet; the arms are observed, never commanded
-# followers:                      # one entry per arm, 1 or 2
-#   - side: left
-#   - side: right
+# leaders:
+#   - type: keyboard              # end-effector keyboard teleop (keys in yam_preview.yaml); [] only observes
+# followers:                      # one entry per arm, 1 or 2, over ROS 2
+#   - side: left                  # reads /left/joint_states, commands /left/cmd_joint
+#   - side: right                 # override with joint_topic: / command_topic:
 # realsense_serials: []
 # ros_cameras:                    # RGB-D cameras on ROS 2 topics (also usable with so101, without link)
 #   - namespace: /camera/top      # no link: fixed in the world, calibrated like a RealSense camera
@@ -18,8 +19,7 @@ robot_type: so101
 #     link: right_camera
 #     # Optional per camera: color_topic, depth_topic, color_info_topic, depth_info_topic (relative to
 #     # namespace). Point depth_topic/depth_info_topic at depth aligned to color to skip registration.
-# ros_joint_topic: /joint_states  # sensor_msgs/JointState with <side>_joint1..6 (rad), <side>_joint7 (m)
-# With followers: [] the YAM arms are shown at the URDF rest pose, no ROS needed.
+# With followers: [] the YAM arms are virtual (no ROS): at the URDF rest pose, or driven by the keyboard.
 
 # leaders/followers must be the same length when both are set (one leader drives one
 # follower, matched by list position). Each of the three lists below may be empty ([]):
