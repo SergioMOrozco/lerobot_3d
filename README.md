@@ -45,7 +45,7 @@ lerobot-teleop
 
 Everything else — recording, extrinsics path, RealSense serials, camera resolution/FPS, the tune panel, the viser port — lives in `teleop_config.yaml`, not on the command line. Run `lerobot-teleop -h` for the full flag list.
 
-Open `http://localhost:<viser_port>` (default `8080`) in a browser to see the fused scene point cloud, the full robot point cloud, and a per-link robot point cloud per URDF link, all updating live. With `tune: true` in the config, the same page shows **Quit** / **Capture** / **Save subgoal** buttons — Quit stops the main loop cleanly, Capture snapshots calibration images (see [Performing calibration](#performing-calibration)), Save subgoal writes the current fused scene to `subgoals/`.
+Open `http://localhost:<viser_port>` (default `8080`) in a browser to see the fused scene point cloud, the full robot point cloud, and a per-link robot point cloud per URDF link, all updating live. With `tune: true` in the config, the same page shows **Quit** / **Capture** / **Save subgoal** buttons — Quit stops the main loop cleanly, Capture snapshots calibration images (see [Performing calibration](#performing-calibration)), Save subgoal writes the current fused scene to `subgoals/`. Each camera is also drawn at its pose as a frustum showing its live color image (wrist cameras move with their arms), and the **Camera views** folder has one button per camera: clicking it moves your browser's view to that camera's pose and field of view, so you see its image head-on. The view isn't locked; orbit away whenever you like.
 
 ## Teleop configuration
 
@@ -121,7 +121,7 @@ ros_cameras:
 - **Recording** stores what the arms were actually sent as each frame's `action` (or the measured joints when only observing), with both arms' joints and links merged into one dataset.
 - **ROS 2 Humble's `rclpy` is built for Python 3.10** (Ubuntu 22.04), so run YAM from a Python 3.10 environment with ROS sourced, e.g. `conda create -n lerobot_3d_ros python=3.10`, `pip install -e ".[realsense]"`, then `source /opt/ros/humble/setup.bash` (plus your `RMW_IMPLEMENTATION` / `CYCLONEDDS_URI` / `ROS_DOMAIN_ID`) before `lerobot-teleop`.
 
-The station URDF and its meshes are bundled under `src/lerobot_3d/calibration/yam/`, vendored from [I2RT](https://github.com/i2rt-robotics/i2rt) revision `120c3c81400171174604e503943f8d1ebc891058` (MIT, see `yam/LICENSE`) with only the mesh paths rewritten; `urdf_path` overrides it. ROS 2 (`rclpy`, `sensor_msgs`, `tf2_msgs`) comes from your ROS installation, not pip, and is only imported when a real YAM arm or a ROS camera is configured.
+The station URDF and its meshes are bundled under `src/lerobot_3d/calibration/yam/`, vendored from [I2RT](https://github.com/i2rt-robotics/i2rt) revision `120c3c81400171174604e503943f8d1ebc891058` (MIT, see `yam/LICENSE`) with the mesh paths rewritten and the arms' sides swapped to match our rig (right arm at y = +0.61 m instead of −0.61 m, top camera re-centered between them); `urdf_path` overrides it. ROS 2 (`rclpy`, `sensor_msgs`, `tf2_msgs`) comes from your ROS installation, not pip, and is only imported when a real YAM arm or a ROS camera is configured.
 
 See `src/teleop_config.yaml` for the full, annotated field list (recording, URDF/calibration overrides, camera stream, smoothing) and `lerobot_3d.teleop_config.TeleopSystemConfig` for the underlying dataclass.
 

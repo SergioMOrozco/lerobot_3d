@@ -6,16 +6,43 @@ used by ``SystemStateViewer``.
 from __future__ import annotations
 
 import math
+import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 import viser
+from scipy.spatial.transform import Rotation
 
 if TYPE_CHECKING:
     from lerobot_3d.common.types import RobotSnapshot
 
 ROBOT_PCD_COLOR = (1.0, 0.1, 0.1)
 """Float RGB used for every robot's sampled mesh point cloud."""
+
+
+
+@dataclass
+class CameraView:
+    """One camera as drawn in viser: pose, field of view, and its latest color image."""
+
+    X_WC: np.ndarray
+    """Camera -> world, OpenCV optical frame (+z forward, -y up)."""
+    fov: float
+    """Vertical field of view (radians)."""
+    aspect: float
+    """Image width / height."""
+    image: np.ndarray | None = None
+    """``(H, W, 3)`` uint8 **RGB**."""
+
+
+def _shrink(image: np.ndarray, width: int) -> np.ndarray:
+    h, w = image.shape[:2]
+    if w <= width:
+        return image
+    import cv2
+
+    return cv2.resize(image, (width, round(h * width / w)), interpolation=cv2.INTER_AREA)
 
 
 def grid_offsets(n: int, spacing: float) -> list[np.ndarray]:
@@ -64,9 +91,82 @@ class ViserSceneViewer:
         self.save_subgoal = False
         self._status_handle = None
         self._status_text = None
+        self.camera_frustum_scale = 0.08
+        """Distance (m) from each camera to its image plane in the scene."""
+        self.camera_image_width = 480
+        """Camera images are shrunk to at most this many pixels wide before sending."""
+        self.camera_image_period_s = 0.1
+        """Each camera's image is re-sent at most this often."""
+        self._cameras: dict[str, CameraView] = {}
+        self._camera_frustums: dict[str, object] = {}
+        self._camera_buttons: dict[str, object] = {}
+        self._camera_image_times: dict[str, float] = {}
+        self._cameras_folder = None
 
         if controls:
             self._add_controls()
+
+    def update_cameras(self, cameras: dict[str, CameraView]) -> None:
+        """Draw every camera at its pose with its live image, plus one sidebar button per camera.
+
+        Each camera is a frustum carrying its color image (re-sent at most every
+        :attr:`camera_image_period_s`). Its button moves that browser's view to the camera's pose and
+        field of view, once: the view isn't locked, so you can orbit away at any time. Cameras that
+        stop being reported are hidden and their buttons disabled.
+        """
+        now = time.monotonic()
+        for name, camera in cameras.items():
+            X_WC = np.asarray(camera.X_WC, dtype=np.float64)
+            wxyz = Rotation.from_matrix(X_WC[:3, :3]).as_quat()[[3, 0, 1, 2]]
+            frustum = self._camera_frustums.get(name)
+            if frustum is None:
+                frustum = self._camera_frustums[name] = self.server.scene.add_camera_frustum(
+                    f"/cameras/{name}", fov=camera.fov, aspect=camera.aspect, scale=self.camera_frustum_scale,
+                    color=(40, 40, 40), format="jpeg", jpeg_quality=75,
+                )
+                self._add_camera_button(name)
+            frustum.position = X_WC[:3, 3]
+            frustum.wxyz = wxyz
+            frustum.fov, frustum.aspect, frustum.visible = camera.fov, camera.aspect, True
+            if camera.image is not None and now - self._camera_image_times.get(name, -np.inf) >= self.camera_image_period_s:
+                frustum.image = _shrink(camera.image, self.camera_image_width)
+                self._camera_image_times[name] = now
+            self._camera_buttons[name].disabled = False
+        for name, frustum in self._camera_frustums.items():
+            if name not in cameras:
+                frustum.visible = False
+                self._camera_buttons[name].disabled = True
+        self._cameras = dict(cameras)
+
+    def _add_camera_button(self, name: str) -> None:
+        if self._cameras_folder is None:
+            self._cameras_folder = self.server.gui.add_folder("Camera views")
+        with self._cameras_folder:
+            button = self.server.gui.add_button(name, hint=f"Look through {name} (then move away freely)")
+
+        @button.on_click
+        def _on_click(event) -> None:
+            self.look_through(name, [event.client] if event.client is not None else None)
+
+        self._camera_buttons[name] = button
+
+    def look_through(self, name: str, clients=None) -> None:
+        """Move ``clients``' views (default: every browser) to camera ``name``'s pose and field of view."""
+        camera = self._cameras.get(name)
+        if camera is None:
+            return
+        X_WC = np.asarray(camera.X_WC, dtype=np.float64)
+        position = X_WC[:3, 3]
+        for client in self.server.get_clients().values() if clients is None else clients:
+            try:
+                with client.atomic():
+                    # OpenCV camera frame, like viser's: +z looks forward, -y is up.
+                    client.camera.position = position
+                    client.camera.look_at = position + 0.5 * X_WC[:3, 2]
+                    client.camera.up_direction = -X_WC[:3, 1]
+                    client.camera.fov = float(camera.fov)
+            except AssertionError:
+                pass  # this browser hasn't reported its camera yet
 
     def _add_controls(self) -> None:
         quit_button = self.server.gui.add_button("Quit", color="red")

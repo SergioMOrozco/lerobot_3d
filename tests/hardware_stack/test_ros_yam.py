@@ -273,6 +273,11 @@ def test_viewer_observes_both_arms_and_places_fixed_and_wrist_cameras(hub, yam_c
         np.testing.assert_allclose(by_name["camera_right_wrist"].X_WC, _fk(viewer, "right", "right_camera", RIGHT))
         dp = by_name["camera_top"]
         assert dp.depth_scale == 0.001 and dp.color_intrinsics.fx == 400.0
+        # Each camera gets a viser button and its frustum + image at its pose (fov from 480 px, fy = 400).
+        assert list(viewer.viewer._camera_buttons) == list(by_name)
+        frustum = viewer.viewer._camera_frustums["camera_left_wrist"]
+        np.testing.assert_allclose(frustum.position, by_name["camera_left_wrist"].X_WC[:3, 3])
+        assert frustum.fov == pytest.approx(2 * np.arctan2(240, 400)) and frustum.image is not None
         assert dp.joint_positions == {**hub.arms["left"].observation, **hub.arms["right"].observation}
         assert viewer.sent_actions is None and hub.published == []  # no actions: observe only
         target = {**hub.arms["left"].observation}

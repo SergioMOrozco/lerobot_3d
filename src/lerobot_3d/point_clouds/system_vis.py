@@ -1,5 +1,6 @@
 import os
 import json
+import math
 import shutil
 import threading
 import time
@@ -15,7 +16,7 @@ from lerobot.utils.constants import ROBOTS, TELEOPERATORS
 from lerobot_3d.teleop_config import TeleopSystemConfig
 from lerobot_3d.paths import CALIBRATION_DIR, YAM_URDF_PATH
 from lerobot_3d.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
-from lerobot_3d.point_clouds.viser_viewer import ViserSceneViewer, grid_offsets
+from lerobot_3d.point_clouds.viser_viewer import CameraView, ViserSceneViewer, grid_offsets
 from lerobot_3d.point_clouds.robot_state import RobotState
 from lerobot_3d.point_clouds.yam_robot_state import YamRobotState
 from lerobot_3d.calibration_mask import (
@@ -49,6 +50,23 @@ def write_intrinsics(datapoints, path="intrinsic_calibration.json") -> None:
         }
     with open(path, "w") as f:
         json.dump(intrinsics, f, indent=8)
+
+
+def camera_views(datapoints) -> dict[str, CameraView]:
+    """Each datapoint's camera as drawn in viser: pose, field of view and its color image (RGB)."""
+    views = {}
+    for datapoint in datapoints:
+        if datapoint.X_WC is None or datapoint.color_intrinsics is None:
+            continue
+        height, width = (datapoint.color if datapoint.color is not None else datapoint.depth).shape[:2]
+        views[datapoint.serial] = CameraView(
+            X_WC=np.asarray(datapoint.X_WC, dtype=np.float64),
+            fov=2.0 * math.atan2(height / 2.0, float(datapoint.color_intrinsics.fy)),
+            aspect=width / height,
+            # Datapoint color is BGR (RealSense bgr8 layout); viser wants RGB.
+            image=None if datapoint.color is None else np.ascontiguousarray(datapoint.color[..., ::-1]),
+        )
+    return views
 
 
 def blend_actions(start_actions, target_actions, alpha):
@@ -312,6 +330,8 @@ class SystemStateViewer:
             else None
         )
         self.viewer.update(scene_pcd_np, scene_colors, snapshots)
+        if datapoints:
+            self.viewer.update_cameras(camera_views(datapoints))
 
         return (
             datapoints,

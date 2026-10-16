@@ -39,7 +39,7 @@ followers:
 
 realsense_serials:
   - "044322073544"
-  - "244622072067"
+  #- "244622072067"
 
 # Virtual robots (only > 1 with leaders: [] and followers: []), and the grid spacing in
 # meters between their bases in viser. robot_calibration_ids takes 1 id (shared) or N.

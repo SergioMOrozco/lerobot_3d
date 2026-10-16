@@ -1,8 +1,8 @@
 # Real YAM arms over ROS 2 (the Jetson rig on the Ethernet link), driven by the keyboard teleop.
 #   lerobot-teleop --config yam_rig.yaml
-# Run it from a Python 3.10 env with this repo installed (ROS 2 Humble's rclpy is built for 3.10), in a
-# terminal that has the rig's ~/.bashrc ROS lines: source /opt/ros/humble/setup.bash and the
-# RMW_IMPLEMENTATION / CYCLONEDDS_URI / ROS_DOMAIN_ID exports.
+# Run it in the lerobot_3d_ros conda env (RoboStack ROS 2 Humble) with RMW_IMPLEMENTATION,
+# CYCLONEDDS_URI and ROS_DOMAIN_ID set. Don't source anything from /opt/ros in that terminal: a
+# system ROS (e.g. Jazzy) shadows the env's rclpy and fails to import.
 # Keys (this terminal needs focus):
 #   w/s: +x/-x  a/d: +y/-y  r/f: +z/-z  i/k: pitch  j/l: yaw  u/o: roll
 #   g/h: gripper open/close  Tab: switch arm  0: home arm  Shift: 4x
@@ -18,10 +18,11 @@ realsense_serials: []
 # Cameras: add once you know each one's depth topic (`ros2 topic list | grep camera`). Each needs
 # color/image_raw/compressed, a lossless compressedDepth topic, both camera_info topics and
 # /tf_static. A fixed camera (no link) also needs an "X_WC" entry in extrinsic_calibration.json.
-ros_cameras: []
-#  - namespace: /camera/left_wrist
-#    link: left_camera
-#  - namespace: /camera/right_wrist
-#    link: right_camera
-#  - namespace: /camera/top          # overhead: check its namespace
+ros_cameras:
+  - namespace: /camera/left_wrist
+    link: left_camera
+  - namespace: /camera/right_wrist
+    link: right_camera
+  - namespace: /camera/top          # overhead; X_WC "camera_top" in extrinsic_calibration.json is the
+                                    # URDF's nominal top_camera pose until you calibrate it
 viser_port: 8080
