@@ -310,13 +310,18 @@ def test_capture_writes_icp_inputs_and_calibrated_wrist_mount_follows_the_arm(hu
 
     out = tmp_path / "calibration_files"
     assert sorted(p.name for p in out.iterdir()) == ["camera_left_wrist", "camera_right_wrist", "camera_top",
-                                                    "robot_pcd.npz"]
+                                                    "capture.json", "robot_pcd.npz"]
     with np.load(out / "camera_left_wrist" / "depth.npz") as data:
         np.testing.assert_array_equal(data["depth"], _camera().depth)
     with np.load(out / "robot_pcd.npz") as data:
         pcd = data["pcd"]
     left_only = viewer.robot_states[0].get_mesh_points(hub.arms["left"].observation)
     assert len(pcd) == 2 * len(left_only)  # both arms are in the ICP target
+    info = json.loads((out / "capture.json").read_text())  # which arms icp.py calibrated against
+    assert list(info["arms"]) == ["left", "right"] and info["linked_cameras"] == ["camera_left_wrist",
+                                                                                   "camera_right_wrist"]
+    np.testing.assert_allclose(info["arms"]["right"], viewer.robot_states[1].get_link_transform(
+        hub.arms["right"].observation, "right_base"))
     intrinsics = json.loads((tmp_path / "intrinsic_calibration.json").read_text())
     assert set(intrinsics) == {"camera_top", "camera_left_wrist", "camera_right_wrist"}
     extrinsics = json.loads((tmp_path / "extrinsic_calibration.json").read_text())
@@ -423,3 +428,29 @@ def test_keyboard_commands_the_real_arms_starting_from_their_measured_pose(hub, 
         assert system.last_actions[1] == pytest.approx(hub.arms["right"].observation, abs=1e-6)  # untouched
     finally:
         system.close()
+
+
+def test_calibrated_right_base_is_used_by_the_viewer_and_the_keyboard(hub, yam_config, tmp_path):
+    from lerobot_3d.control.teleop import TeleopPointCloudSystem
+    from lerobot_3d.teleop_config import YamLeaderConfig
+
+    right_base = np.eye(4)
+    right_base[:3, 3] = [0.01, 0.59, 0.0]
+    path = tmp_path / "extrinsic_calibration.json"
+    extrinsics = json.loads(path.read_text())
+    extrinsics["yam_right_base"] = {"X_W_base": right_base.tolist(), "from_camera": "camera_top"}
+    path.write_text(json.dumps(extrinsics))
+
+    system = TeleopPointCloudSystem(yam_config(leaders=(YamLeaderConfig(),)))
+    try:
+        system.connect()
+        _, _, _, _, snapshots = system.step()
+        np.testing.assert_allclose(snapshots[1].base_offset, [0.01, 0.59, 0.0])  # drawn at the calibration
+        np.testing.assert_allclose(snapshots[0].base_offset, [0, 0, 0])  # left base: the origin
+        np.testing.assert_allclose(system.leaders[0]._kinematics["right"].T_world_base, right_base, atol=1e-12)
+        wrist = {dp.serial: dp for dp in system.step()[0]}["camera_right_wrist"]
+        np.testing.assert_allclose(wrist.X_WC, system.viewer.robot_states[1].get_link_transform(
+            hub.arms["right"].observation, "right_camera"))
+    finally:
+        system.close()
+

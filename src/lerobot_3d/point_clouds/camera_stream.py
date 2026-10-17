@@ -137,6 +137,8 @@ class MultiRealSenseStream:
         extrinsics = {}
 
         for serial, data in e.items():
+            if "X_WC" not in data:
+                continue  # not a camera (e.g. a calibrated yam_<side>_base)
             extrinsics[serial] = {
                 "X_WC": np.array(data["X_WC"]),
             }

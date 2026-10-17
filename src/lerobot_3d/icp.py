@@ -121,6 +121,44 @@ def refine_icp_multiscale(
     return result
 
 
+def record_per_arm_calibrations(extrinsics, serials, calibration_dir="calibration_files"):
+    """YAM: after a capture against one arm alone, keep each fixed camera's pose relative to that arm's
+    base (``extrinsics[serial]["per_arm"][side]``). Once a camera has been calibrated against both arms,
+    the right base's pose in the world (the left base) follows from the pair,
+    ``X_WR = X_WL @ X_LC @ inv(X_RC)``, and is written as ``yam_right_base``; the camera's live ``X_WC``
+    then comes from its left-arm calibration. Captures without ``capture.json`` (SO101) are untouched.
+    """
+    path = os.path.join(calibration_dir, "capture.json")
+    if not os.path.exists(path):
+        return
+    with open(path) as f:
+        info = json.load(f)
+    arms = info.get("arms", {})
+    if len(arms) != 1:
+        print(f"Calibrated against the {' + '.join(arms)} arms together; per-arm camera poses are only "
+              "kept for captures with a single arm in followers.")
+        return
+    side, X_W_base = next(iter(arms.items()))
+    X_W_base = np.asarray(X_W_base, dtype=np.float64)
+    linked = set(info.get("linked_cameras", []))
+    for serial in serials:
+        if serial in linked:
+            continue  # wrist cameras move with an arm; only fixed cameras tie the bases together
+        per_arm = extrinsics[serial].setdefault("per_arm", {})
+        per_arm[side] = (np.linalg.inv(X_W_base) @ np.asarray(extrinsics[serial]["X_WC"])).tolist()
+        print(f"{serial}: kept its calibration against the {side} arm "
+              f"(has {', '.join(sorted(per_arm))}{'' if len(per_arm) == 2 else '; calibrate the other arm next'})")
+        if {"left", "right"} <= per_arm.keys():
+            X_WL = np.asarray(extrinsics.get("yam_left_base", {}).get("X_W_base", np.eye(4)), dtype=np.float64)
+            X_LC, X_RC = np.asarray(per_arm["left"]), np.asarray(per_arm["right"])
+            X_WR = X_WL @ X_LC @ np.linalg.inv(X_RC)
+            extrinsics["yam_right_base"] = {"X_W_base": X_WR.tolist(), "from_camera": serial}
+            extrinsics[serial]["X_WC"] = (X_WL @ X_LC).tolist()
+            offset = X_WR[:3, 3] - X_WL[:3, 3]
+            print(f"yam_right_base from {serial}: right base at {np.round(X_WR[:3, 3], 4)} m, "
+                  f"{np.linalg.norm(offset) * 100:.1f} cm from the left base")
+
+
 def main(viewer: AlignmentViewer):
     calibration_dir = "calibration_files"
 
@@ -233,6 +271,7 @@ def main(viewer: AlignmentViewer):
     )
     for serial in serials:
         extrinsics[serial]['X_WC'] = T_final[serial].tolist()
+    record_per_arm_calibrations(extrinsics, serials, calibration_dir)
 
     with open("extrinsic_calibration.json", "w") as f:
         json.dump(extrinsics, f, indent=8)

@@ -32,7 +32,7 @@ pip install -e ".[realsense]"
 
 ## Teleop (`lerobot-teleop`)
 
-Drives **N SO101 follower** arms from **N SO101 leader** teleoperators — or observes **one or two I2RT YAM arms** over ROS 2 (see [YAM arms and ROS cameras](#yam-arms-and-ros-cameras)) — while streaming **Intel RealSense** and/or **ROS 2** RGB-D cameras, fusing depth into a scene point cloud, sampling the robot's URDF for a robot point cloud, and rendering all of it live in **viser**.
+Drives **N SO101 follower** arms from **N SO101 leader** teleoperators — or drives (with a keyboard end-effector teleop) or observes **one or two I2RT YAM arms** over ROS 2 (see [YAM arms and ROS cameras](#yam-arms-and-ros-cameras)) — while streaming **Intel RealSense** and/or **ROS 2** RGB-D cameras, fusing depth into a scene point cloud, sampling the robot's URDF for a robot point cloud, and rendering all of it live in **viser**.
 
 ```bash
 lerobot-teleop
@@ -119,7 +119,18 @@ ros_cameras:
 
   IK (`lerobot_3d.point_clouds.yam_kinematics`) turns the targets into joint angles each step, within the URDF limits; a target the arm can't reach is pulled back to the closest pose it can, so holding a key against a limit doesn't wind up. The rest pose is folded against joint limits, so from there an arm can only move up (`r`) or forward (`w`). The viser **Home** button eases every arm back to the rest pose over 2 s (motion keys wait until it's done). It's a LeRobot teleoperator (`lerobot_3d.teleoperators.yam_keyboard.YamKeyboard`, registered as `yam_keyboard`), and the recording keys (Enter/Space/y/n) still work alongside it.
 - **Recording** stores what the arms were actually sent as each frame's `action` (or the measured joints when only observing), with both arms' joints and links merged into one dataset.
-- **ROS 2 Humble's `rclpy` is built for Python 3.10** (Ubuntu 22.04), so run YAM from a Python 3.10 environment with ROS sourced, e.g. `conda create -n lerobot_3d_ros python=3.10`, `pip install -e ".[realsense]"`, then `source /opt/ros/humble/setup.bash` (plus your `RMW_IMPLEMENTATION` / `CYCLONEDDS_URI` / `ROS_DOMAIN_ID`) before `lerobot-teleop`.
+- **ROS 2 from conda**: `apt`'s ROS 2 Humble is built for Ubuntu 22.04's Python 3.10, so install it into its own env from [RoboStack](https://robostack.github.io/) instead (built for the env's Python, with numpy 2 on Python 3.12):
+
+  ```bash
+  conda create -n lerobot_3d_ros -c conda-forge -c robostack-staging python=3.12 \
+      ros-humble-ros-base ros-humble-rmw-cyclonedds-cpp
+  conda activate lerobot_3d_ros
+  pip install -e ".[realsense]"
+  conda env config vars set -n lerobot_3d_ros RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+      CYCLONEDDS_URI=file://$HOME/cyclonedds.client.xml ROS_DOMAIN_ID=42
+  ```
+
+  Activating the env sets ROS up, so don't `source /opt/ros/...` in the same terminal: a system ROS (e.g. Jazzy) shadows the env's `rclpy` and fails to import with `undefined symbol` errors.
 
 The station URDF and its meshes are bundled under `src/lerobot_3d/calibration/yam/`, vendored from [I2RT](https://github.com/i2rt-robotics/i2rt) revision `120c3c81400171174604e503943f8d1ebc891058` (MIT, see `yam/LICENSE`) with the mesh paths rewritten and the arms' sides swapped to match our rig (right arm at y = +0.61 m instead of −0.61 m, top camera re-centered between them); `urdf_path` overrides it. ROS 2 (`rclpy`, `sensor_msgs`, `tf2_msgs`) comes from your ROS installation, not pip, and is only imported when a real YAM arm or a ROS camera is configured.
 
@@ -224,9 +235,77 @@ Pushing again after recording more episodes re-uploads the changed files. Anyone
 6. Once every camera is done, all of them are shown together in color over the robot mesh, in a **Review / fine-tune merged result** panel. Pick a camera in the **Camera** dropdown and nudge it with the same buttons to line it up against the other cameras (**Reset** undoes that camera's nudges only). **Confirm** keeps the fine-tuned poses. **Abort** keeps the poses from step 5.
 7. The refined `extrinsic_calibration.json` is written back — ready for `lerobot-teleop`.
 
-**YAM specifics.** Capture needs live joints for both configured arms, writes both arms into `robot_pcd.npz` (densely sampled, in the station's world frame), and skips the follower homing step. `icp.py` runs without RealSense installed; it only skips its live RealSense preview at the end.
+### Calibrating the YAM station
 
-**Wrist cameras** (ROS cameras with a `link`) don't need an entry to start: they sit at their URDF camera link. Capture writes one for each, holding the current placement as ICP's starting `X_WC` plus the `link` and that link's pose at capture (`X_WL`), so a refined `X_WC` becomes a fixed mount offset, `inv(X_WL) @ X_WC`, that follows the arm at any joint angles. Calibrating them is optional. A wrist camera usually sees only the fingers, which gives ICP little to lock onto, so its auto-ICP result can slide off; accept it only if it visibly lines up better, otherwise **Abort** (keeps your manual alignment) or **Skip** the camera in the mask step to keep the URDF mount.
+**Frames.** The world origin is the **left** arm's base. Each camera and the right arm are placed relative to it:
+
+| | Where its pose comes from |
+|---|---|
+| Left arm base | The world origin, always |
+| Right arm base | `yam_right_base` in `extrinsic_calibration.json` once calibrated, else the URDF's offset (0.61 m along +y) |
+| Top camera (`camera_top`, fixed) | `camera_top.X_WC`, from the calibration below |
+| Wrist cameras (`link` set) | Their URDF camera link, from the measured joints: nothing to calibrate |
+
+The top camera ties the two arms together: it's calibrated against each arm alone, and the right base follows from the two results.
+
+**Before you start**
+
+- Use the `lerobot_3d_ros` env with the rig's ROS settings (see [YAM arms and ROS cameras](#yam-arms-and-ros-cameras)), and check that the top camera's color stream reaches your machine: its live image should update in viser.
+- `extrinsic_calibration.json` needs a `camera_top` entry to start from. Identity works; the URDF's nominal top-camera pose (centered between the arms, about 0.95 m up, tilted 30° forward) gives ICP a closer start.
+- Mount the top camera for good: it must not move between the two calibrations, or after them.
+
+**1. Calibrate the top camera against the left arm**
+
+```bash
+lerobot-teleop --config yam_calibrate_left_top.yaml   # followers: only the left arm; cameras: only the top one
+```
+
+Pose the left arm where the top camera sees as much of it as possible, away from the folded rest pose (keyboard: `w/s a/d r/f` move, `i/k j/l u/o` rotate), and click **Capture**. The terminal should report `ICP target: left arm(s); cameras: camera_top`; if it lists both arms, you're in the wrong config. In the SAM2 window, left-click only the left arm and right-click anything else it grabs, then:
+
+```bash
+python -m lerobot_3d.icp
+```
+
+Align the cloud onto the arm, confirm, and confirm the ICP result. `camera_top.X_WC` is now the camera's pose relative to the left base, also kept as `camera_top.per_arm.left`.
+
+**2. Calibrate the top camera against the right arm**
+
+```bash
+lerobot-teleop --config yam_calibrate_right_top.yaml  # followers: only the right arm
+```
+
+Same steps with the right arm: Capture (`ICP target: right arm(s)`), mask only the right arm, `python -m lerobot_3d.icp`. This keeps `camera_top.per_arm.right`, and because `camera_top` now has both, `icp.py` also:
+
+- writes `yam_right_base`: the right base's pose relative to the left base, X_WR = X_LC · X_RC⁻¹, and prints its position and distance from the left base;
+- resets `camera_top.X_WC` to the left-arm calibration (the world origin).
+
+From then on the right arm is drawn, moved by the keyboard's IK, and used in Captures at `yam_right_base`, and the right wrist camera moves with it. `lerobot-teleop` prints the calibrated base it loads at startup.
+
+**3. Check the result**
+
+```bash
+lerobot-teleop --config yam_rig.yaml
+```
+
+The top camera's point cloud should sit on both arms' meshes. Compare `yam_right_base` with the physical setup too: for two arms on one flat table the bases should be level with each other (no roll or pitch, same height) and about 61 cm apart. Each camera calibration's rotation error moves the right base by roughly 1.7 cm per degree at 1 m from the camera, so a few degrees of tilt or a centimetre of height usually means one calibration is off. Redo it with that arm filling more of the image.
+
+**What `extrinsic_calibration.json` ends up holding**
+
+```json
+"camera_top": {
+    "X_WC": "...the top camera in the world (= per_arm.left)",
+    "per_arm": {"left": "...camera relative to the left base", "right": "...camera relative to the right base"}
+},
+"yam_right_base": {"X_W_base": "...right base in the world", "from_camera": "camera_top"}
+```
+
+- **Recalibrating one arm:** run its step again. With the other arm's `per_arm` entry still there, `yam_right_base` is recomputed. If you moved the top camera, redo both steps.
+- **Back to the URDF's right-arm offset:** delete `yam_right_base`.
+- `camera_top.X_WC` is required (it places the camera at runtime); `per_arm` is only used to recompute `yam_right_base`.
+
+**Wrist cameras** need no calibration. A Capture with a config that includes them (e.g. `yam_rig.yaml`) still writes `camera_left_wrist` / `camera_right_wrist` entries holding their current URDF pose (`X_WC` equal to `X_WL`, a zero offset); they change nothing and can be deleted. To calibrate one anyway, mask it in the Capture: `icp.py` refines its `X_WC`, and the offset `inv(X_WL) @ X_WC` then follows the arm at any joint angles. A wrist camera usually sees only the fingers, though, so its ICP result tends to slide off; accept it only if it visibly lines up better.
+
+**Other YAM differences from SO101:** Capture skips the follower homing step, writes `calibration_files/capture.json` (the arms in the target and their base poses), and samples every configured arm densely in the world frame for `robot_pcd.npz`. `icp.py` runs without RealSense installed; it only skips its live RealSense preview at the end.
 
 ## Custom teleop script
 

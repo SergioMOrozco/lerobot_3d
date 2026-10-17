@@ -22,6 +22,27 @@ sensor noise and clipped. Rest sits exactly on some lower limits (joints 2 and 3
 noise lands just past them. Anything further out means the joint mapping is wrong and raises."""
 
 
+def base_pose_key(side: str) -> str:
+    """Extrinsics-file entry holding a calibrated arm base pose, ``{"X_W_base": 4x4}``."""
+    return f"yam_{side}_base"
+
+
+def yam_base_poses(extrinsics) -> dict[str, np.ndarray]:
+    """``{side: X_W_base}`` for every arm with a calibrated base pose in an extrinsics dict."""
+    return {
+        side: np.asarray(extrinsics[base_pose_key(side)]["X_W_base"], dtype=np.float64)
+        for side in ("left", "right")
+        if base_pose_key(side) in extrinsics
+    }
+
+
+def base_correction(urdf_base: np.ndarray, base_pose: np.ndarray | None) -> np.ndarray:
+    """World transform moving an arm from its URDF base pose to ``base_pose`` (identity if ``None``)."""
+    if base_pose is None:
+        return np.eye(4)
+    return np.asarray(base_pose, dtype=np.float64) @ np.linalg.inv(urdf_base)
+
+
 def joint_keys(side: str) -> list[str]:
     """One arm's LeRobot-style observation/action keys, in URDF joint order."""
     return [f"{side}_joint{i}.pos" for i in range(1, 7)] + [f"{side}_gripper.pos"]
@@ -32,11 +53,15 @@ class YamRobotState:
 
     Observations are keyed like a LeRobot robot (see :func:`joint_keys`): ``<side>_joint1..6.pos``
     in radians and ``<side>_gripper.pos`` as the gripper opening, 0 closed to 1 fully open (the YAM's own
-    ``<side>_gripper`` command convention), which drives both linear_4310 fingers. Base and camera placements are exactly those in the URDF, so snapshots are
-    placed at the arm's station pose rather than on a grid.
+    ``<side>_gripper`` command convention), which drives both linear_4310 fingers.
+
+    Base and camera placements are those in the URDF, so snapshots are placed at the arm's station
+    pose rather than on a grid. ``base_pose`` (a calibrated world pose of ``<side>_base``, see
+    :func:`yam_base_poses`) moves the whole arm, its links and wrist camera included, from the URDF's
+    base pose to it.
     """
 
-    def __init__(self, urdf_path, side):
+    def __init__(self, urdf_path, side, base_pose: np.ndarray | None = None):
         if side not in ("left", "right"):
             raise ValueError("side must be left or right")
         self.side = side
@@ -69,6 +94,9 @@ class YamRobotState:
         if not self._meshes:
             raise ValueError("The selected arm has no visual meshes")
         self._calibration_points = None
+        urdf_base = self.robot_urdf.link_fk(use_names=True)[side + "_base"]
+        self.correction = base_correction(urdf_base, base_pose)
+        """Applied in front of every URDF link pose of this arm (identity without ``base_pose``)."""
 
     def rest_observation(self) -> dict[str, float]:
         """The URDF's own rest configuration: every joint at 0, fingers closed."""
@@ -100,15 +128,15 @@ class YamRobotState:
 
     def get_link_transform(self, observation, link):
         """World (URDF) pose of ``link`` at ``observation``."""
-        return self.robot_urdf.link_fk(cfg=self.get_joint_positions(observation), use_names=True)[link]
+        return self.correction @ self.robot_urdf.link_fk(cfg=self.get_joint_positions(observation), use_names=True)[link]
 
     def get_robot_snapshot(self, observation, index=0, base_offset=None):
         """Same interface as ``RobotState.get_robot_snapshot``; ``base_offset`` is ignored because
         the arm's base pose comes from the station URDF."""
         joints = self.get_joint_positions(observation)
         poses = self.robot_urdf.link_fk(cfg=joints, use_names=True)
-        base = poses[self.side + "_base"]
-        local = {name: np.linalg.inv(base) @ matrix for name, matrix in poses.items()}
+        local = {name: np.linalg.inv(poses[self.side + "_base"]) @ matrix for name, matrix in poses.items()}
+        base = self.correction @ poses[self.side + "_base"]  # link poses stay base-relative
         parts = defaultdict(list)
         for link, points in self._points:
             parts[link].append(transform_points(local[link], points))
@@ -143,4 +171,6 @@ class YamRobotState:
                 for name, _, vertices, faces in self._meshes
             ]
         poses = self.robot_urdf.link_fk(cfg=self.get_joint_positions(observation), use_names=True)
-        return np.concatenate([transform_points(poses[name], points) for name, points in self._calibration_points])
+        return np.concatenate([
+            transform_points(self.correction @ poses[name], points) for name, points in self._calibration_points
+        ])

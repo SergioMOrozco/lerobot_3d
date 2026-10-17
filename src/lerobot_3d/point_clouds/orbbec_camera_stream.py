@@ -317,6 +317,8 @@ class MultiOrbbecStream:
 
         self.extrinsics: dict[str, dict[str, np.ndarray]] = {}
         for serial, data in e.items():
+            if "X_WC" not in data:
+                continue  # not a camera (e.g. a calibrated yam_<side>_base)
             self.extrinsics[serial] = {"X_WC": np.array(data["X_WC"])}
 
     def get_datapoints(self) -> list[Datapoint]:

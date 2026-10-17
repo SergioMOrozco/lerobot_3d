@@ -59,6 +59,8 @@ class TeleopPointCloudSystem:
             ]
         self.viewer = SystemStateViewer(config)
         if config.robot_type == "yam" and self.leaders:
+            # IK in the same world as the arms drawn in viser (calibrated base poses included).
+            self.leaders[0].config.base_poses = self.viewer.base_poses
             home_button = self.viewer.viewer.server.gui.add_button("Home", hint="Ease every arm back to its rest pose")
             # Clicks arrive on viser's thread; the control loop applies them in step().
             self._home_requested = False

@@ -18,7 +18,7 @@ from lerobot_3d.paths import CALIBRATION_DIR, YAM_URDF_PATH
 from lerobot_3d.point_clouds.camera_stream import MultiRealSenseStream, get_fused_point_cloud
 from lerobot_3d.point_clouds.viser_viewer import CameraView, ViserSceneViewer, grid_offsets
 from lerobot_3d.point_clouds.robot_state import RobotState
-from lerobot_3d.point_clouds.yam_robot_state import YamRobotState
+from lerobot_3d.point_clouds.yam_robot_state import YamRobotState, yam_base_poses
 from lerobot_3d.calibration_mask import (
     SEGMENT_HELP,
     RobotSegmenter,
@@ -174,10 +174,17 @@ class SystemStateViewer:
             self._link_robot = {link: sides.index(link.split("_")[0]) for link in self.ros_stream.links}
 
     def _init_yam_robots(self, config: TeleopSystemConfig) -> None:
-        # One YamRobotState per arm; each snapshot carries the arm's station pose from the URDF,
-        # so there is no grid layout.
+        # One YamRobotState per arm; each snapshot carries the arm's station pose (the URDF's, or a
+        # calibrated yam_<side>_base from the extrinsics file), so there is no grid layout.
+        from lerobot_3d.point_clouds.ros_camera_stream import extrinsics_path, read_extrinsics
+
         urdf = config.urdf_path or str(YAM_URDF_PATH)
-        self.robot_states = [YamRobotState(urdf, side) for side in config.yam_sides]
+        self.base_poses = yam_base_poses(read_extrinsics(extrinsics_path(config.extrinsic_json)))
+        """Calibrated arm base poses in use, ``{side: X_W_base}``; arms without one use the URDF's."""
+        for side, pose in self.base_poses.items():
+            if side in config.yam_sides:
+                print(f"YAM {side} arm base: calibrated pose at {np.round(pose[:3, 3], 3)} m")
+        self.robot_states = [YamRobotState(urdf, side, base_pose=self.base_poses.get(side)) for side in config.yam_sides]
         self.num_robots = len(self.robot_states)
         self.base_offsets = [None] * self.num_robots
         for i, robot_state in enumerate(self.robot_states):
@@ -305,6 +312,8 @@ class SystemStateViewer:
                 os.path.join(calibration_dir, "robot_pcd.npz"),
                 pcd=np.array(self._capture_robot_pcd(observations, snapshots)),
             )
+            if self.robot_type == "yam":
+                self._write_capture_info(calibration_dir, observations)
             # icp.py needs intrinsics for every captured camera; don't wait for shutdown.
             write_intrinsics(datapoints)
             if self.ros_stream is not None:
@@ -486,6 +495,22 @@ class SystemStateViewer:
                 robot_state.get_mesh_points(obs) for robot_state, obs in zip(self.robot_states, observations)
             ])
         return snapshots[0].pcd
+
+    def _write_capture_info(self, calibration_dir: str, observations) -> None:
+        """``capture.json``: which arms are in robot_pcd.npz and their base poses, so icp.py can also
+        keep each fixed camera's pose relative to an arm it was calibrated against alone."""
+        info = {
+            "robot_type": "yam",
+            "arms": {
+                state.side: state.get_link_transform(obs, f"{state.side}_base").tolist()
+                for state, obs in zip(self.robot_states, observations)
+            },
+            "linked_cameras": sorted(self.ros_stream.mounts) if self.ros_stream is not None else [],
+        }
+        with open(os.path.join(calibration_dir, "capture.json"), "w") as f:
+            json.dump(info, f, indent=4)
+        print(f"[capture] ICP target: {' + '.join(info['arms'])} arm(s); cameras: "
+              f"{', '.join(os.path.basename(d) for d in sorted(os.listdir(calibration_dir)) if os.path.isdir(os.path.join(calibration_dir, d)))}")
 
     def _write_extrinsic_seeds(self, seeds: dict) -> None:
         """Add/replace linked cameras' entries (starting ``X_WC`` plus ``link``/``X_WL``) in the

@@ -10,6 +10,8 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from urchin import URDF
 
+from lerobot_3d.point_clouds.yam_robot_state import base_correction
+
 
 def _axis_angle(axis: np.ndarray, angle: float) -> np.ndarray:
     T = np.eye(4)
@@ -20,7 +22,7 @@ def _axis_angle(axis: np.ndarray, angle: float) -> np.ndarray:
 class YamArmKinematics:
     """End-effector pose of one arm as a function of its six joint angles (world = URDF root)."""
 
-    def __init__(self, urdf_path, side: str, ee_link: str | None = None):
+    def __init__(self, urdf_path, side: str, ee_link: str | None = None, base_pose: np.ndarray | None = None):
         if side not in ("left", "right"):
             raise ValueError("side must be left or right")
         self.side = side
@@ -40,6 +42,8 @@ class YamArmKinematics:
         first = next(i for i, j in enumerate(chain) if j.joint_type != "fixed")
         for joint in chain[:first]:
             self.T_world_base = self.T_world_base @ joint.origin
+        # A calibrated base pose replaces the URDF's (see yam_robot_state.yam_base_poses).
+        self.T_world_base = base_correction(self.T_world_base, base_pose) @ self.T_world_base
         self._joints = [(np.asarray(j.origin, dtype=np.float64), np.asarray(j.axis, dtype=np.float64),
                          j.joint_type != "fixed") for j in chain[first:]]
         moving = [j for j in chain[first:] if j.joint_type != "fixed"]

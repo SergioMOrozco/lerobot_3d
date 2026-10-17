@@ -1,0 +1,23 @@
+# Calibrate the overhead (top) camera against the LEFT YAM arm only (step 1 of 2; the left base is the
+# world origin).
+#   lerobot-teleop --config yam_calibrate_left_top.yaml
+# Run it in the lerobot_3d_ros env (RoboStack ROS 2 Humble, with RMW_IMPLEMENTATION / CYCLONEDDS_URI /
+# ROS_DOMAIN_ID set; don't source /opt/ros in that terminal).
+#
+# 1. Pose the left arm where the top camera sees it well (keyboard: w/s a/d r/f move, i/k j/l u/o
+#    rotate, g/h gripper; this terminal needs focus), then click Capture in viser.
+#    Capture's ICP target (calibration_files/robot_pcd.npz) is only the arms listed under followers.
+# 2. In the SAM2 window, left-click only on the left arm; right-click anything else it grabs.
+# 3. python -m lerobot_3d.icp  -> sets camera_top's X_WC and keeps it as camera_top.per_arm.left.
+# Then run yam_calibrate_right_top.yaml. Once camera_top has both, icp.py writes yam_right_base: the
+# right arm's base pose relative to the left base, used everywhere the right arm is drawn or moved.
+# Don't move the top camera between the two calibrations.
+robot_type: yam
+leaders:
+  - type: keyboard          # use [] if you'd rather pose the arm another way
+followers:
+  - side: left              # /left/joint_states -> /left/cmd_joint
+realsense_serials: []
+ros_cameras:
+  - namespace: /camera/top  # starts from camera_top's current pose in extrinsic_calibration.json
+viser_port: 8080

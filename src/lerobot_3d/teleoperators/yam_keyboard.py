@@ -55,6 +55,9 @@ class YamKeyboardConfig(TeleoperatorConfig):
     """Gripper opening change per key press (0 closed .. 1 fully open)."""
     home_duration_s: float = 2.0
     """How long :meth:`YamKeyboard.home` takes to ease an arm back to the rest pose."""
+    base_poses: dict | None = None
+    """Calibrated ``{side: X_W_base}`` arm base poses (see ``yam_robot_state.yam_base_poses``), so IK
+    targets live in the same world as the arms drawn in viser; ``None`` -> the URDF's."""
 
 
 class YamKeyboard(Teleoperator):
@@ -87,7 +90,8 @@ class YamKeyboard(Teleoperator):
 
     def connect(self, calibrate: bool = True) -> None:
         urdf = self.config.urdf_path or str(YAM_URDF_PATH)
-        self._kinematics = {side: YamArmKinematics(urdf, side) for side in self.sides}
+        poses = self.config.base_poses or {}
+        self._kinematics = {side: YamArmKinematics(urdf, side, base_pose=poses.get(side)) for side in self.sides}
         for side in self.sides:
             self.reset(side)
             self._homing.pop(side, None)
