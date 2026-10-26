@@ -209,6 +209,7 @@ class _FakeViewer:
     quit = False
     capture = False
     save_subgoal = False
+    fit_table = False
 
     def __init__(self):
         self.updates = []

@@ -23,7 +23,14 @@ from lerobot_3d.calibration_mask import (
     SEGMENT_HELP,
     RobotSegmenter,
     save_mask_png,
+    segment_help,
     segment_interactively,
+)
+from lerobot_3d.table_plane import (
+    TABLE_PLANE_KEY,
+    fit_table_plane,
+    load_table_plane,
+    masked_world_points,
 )
 
 _HOMING_DURATION_S = 3.0
@@ -161,6 +168,12 @@ class SystemStateViewer:
         else:
             self._init_so101_robots(config)
         self.serials = serials
+
+        self.extrinsic_json = config.extrinsic_json
+        self.table_plane = load_table_plane(config.extrinsic_json)
+        """The fitted table (``table_plane`` in the extrinsics file), or ``None`` until it's fit."""
+        if self.table_plane is not None:
+            self.viewer.draw_table_plane(self.table_plane)
 
         self.ros_stream = None
         self._link_robot: dict[str, int] = {}
@@ -322,6 +335,10 @@ class SystemStateViewer:
             if self.segment_on_capture:
                 self._home_followers()
                 self._segment_capture(datapoints, calibration_dir)
+
+        if self.viewer.fit_table:
+            self.viewer.fit_table = False
+            self._fit_table(datapoints)
 
         scene_pcd, _ = get_fused_point_cloud(
            datapoints
@@ -544,6 +561,55 @@ class SystemStateViewer:
                 continue
             save_mask_png(mask_path, datapoint.color, mask)
             print(f"[capture] Wrote {mask_path}")
+
+    def _fit_table(self, datapoints) -> None:
+        """Click-segment the table in each camera, fit one plane to all their world points, save it as
+        the extrinsics file's ``table_plane`` entry and draw it. Blocks the loop like Capture's masks."""
+        from lerobot_3d.point_clouds.ros_camera_stream import extrinsics_path, read_extrinsics
+
+        print(f"[table] Segment the table in each camera's window. {segment_help('table')}")
+        clouds = {}
+        for datapoint in datapoints:
+            if datapoint.color is None or datapoint.X_WC is None:
+                continue
+            try:
+                mask = segment_interactively(
+                    self._segmenter, datapoint.color, f"Segment table - {datapoint.serial}", target="table"
+                )
+            except ImportError as e:
+                print(f"[table] {e}")
+                return
+            if mask is None:
+                print(f"[table] Skipped {datapoint.serial}.")
+                continue
+            intr = datapoint.color_intrinsics
+            K = np.array([[intr.fx, 0.0, intr.ppx], [0.0, intr.fy, intr.ppy], [0.0, 0.0, 1.0]])
+            clouds[datapoint.serial] = masked_world_points(
+                datapoint.depth, mask, K, datapoint.depth_scale, datapoint.X_WC, max_depth=datapoint.max_depth
+            )
+        points = np.concatenate(list(clouds.values())) if clouds else np.zeros((0, 3))
+        try:
+            plane = fit_table_plane(points)
+        except ValueError as e:
+            print(f"[table] Not saved: {e}")
+            return
+        print(f"[table] Plane: normal {np.round(plane.normal, 4)}, table top at "
+              f"{np.round(plane.X_W_table[:3, 3], 4)} m, {plane.extent[0]:.3f} x {plane.extent[1]:.3f} m, "
+              f"rms {plane.rms * 1000:.1f} mm over {plane.inliers} points")
+        # Each camera's median height above the fused plane: one far from 0 has extrinsic error.
+        for serial, cloud in clouds.items():
+            heights = plane.signed_distance(cloud)
+            heights = heights[np.abs(heights) < 0.03]
+            if len(heights):
+                print(f"[table]   {serial}: median offset {np.median(heights) * 1000:+.1f} mm")
+        path = extrinsics_path(self.extrinsic_json)
+        extrinsics = read_extrinsics(path)
+        extrinsics[TABLE_PLANE_KEY] = plane.to_json()
+        with open(path, "w") as f:
+            json.dump(extrinsics, f, indent=8)
+        print(f"[table] Wrote {TABLE_PLANE_KEY} to {path}")
+        self.table_plane = plane
+        self.viewer.draw_table_plane(plane)
 
     def _save_scene_pcd_subgoal(self, scene_pcd: o3d.geometry.PointCloud) -> None:
         subgoals_dir = "subgoals"

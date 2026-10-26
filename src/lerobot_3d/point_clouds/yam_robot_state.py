@@ -43,6 +43,14 @@ def base_correction(urdf_base: np.ndarray, base_pose: np.ndarray | None) -> np.n
     return np.asarray(base_pose, dtype=np.float64) @ np.linalg.inv(urdf_base)
 
 
+def visual_color(visual, default=(200, 200, 200)) -> tuple[int, int, int]:
+    """A URDF visual's material color as 0-255 RGB (``default`` without one)."""
+    material = visual.material
+    if material is None or material.color is None:
+        return default
+    return tuple(int(round(float(c) * 255)) for c in np.asarray(material.color)[:3])
+
+
 def joint_keys(side: str) -> list[str]:
     """One arm's LeRobot-style observation/action keys, in URDF joint order."""
     return [f"{side}_joint{i}.pos" for i in range(1, 7)] + [f"{side}_gripper.pos"]
@@ -74,7 +82,7 @@ class YamRobotState:
                 raise ValueError("Expected the composed YAM v1 / linear_4310 station URDF")
             if i >= 6 and (joint.limit.lower != 0 or joint.limit.upper <= 0):
                 raise ValueError("Expected positive-travel linear_4310 fingers")
-        self._meshes, self._points = [], []
+        self._meshes, self._points, self._mesh_colors = [], [], []
         for link in self.robot_urdf.links:
             if not link.name.startswith(side + "_"):
                 continue
@@ -90,6 +98,7 @@ class YamRobotState:
                     self._meshes.append(
                         (link.name, f"{visual_index}_{mesh_index}", mesh.vertices, mesh.faces)
                     )
+                    self._mesh_colors.append(visual_color(visual))
                     self._points.append((link.name, trimesh.sample.sample_surface(mesh, 500)[0]))
         if not self._meshes:
             raise ValueError("The selected arm has no visual meshes")
@@ -124,7 +133,8 @@ class YamRobotState:
         return out
 
     def get_static_meshes(self):
-        return self._meshes
+        """``(link, mesh name, vertices, faces, rgb)`` per visual mesh; rgb is the URDF material's color."""
+        return [(*mesh, color) for mesh, color in zip(self._meshes, self._mesh_colors)]
 
     def get_link_transform(self, observation, link):
         """World (URDF) pose of ``link`` at ``observation``."""
@@ -137,10 +147,12 @@ class YamRobotState:
         poses = self.robot_urdf.link_fk(cfg=joints, use_names=True)
         local = {name: np.linalg.inv(poses[self.side + "_base"]) @ matrix for name, matrix in poses.items()}
         base = self.correction @ poses[self.side + "_base"]  # link poses stay base-relative
-        parts = defaultdict(list)
-        for link, points in self._points:
+        parts, part_colors = defaultdict(list), defaultdict(list)
+        for (link, points), color in zip(self._points, self._mesh_colors):
             parts[link].append(transform_points(local[link], points))
+            part_colors[link].append(np.tile(np.asarray(color, dtype=np.uint8), (len(points), 1)))
         per_link = {name: np.concatenate(points) for name, points in parts.items()}
+        per_link_colors = {name: np.concatenate(colors) for name, colors in part_colors.items()}
         link_poses = {
             name: (local[name][:3, 3], Rotation.from_matrix(local[name][:3, :3]).as_quat()[[3, 0, 1, 2]])
             for name in per_link
@@ -154,6 +166,8 @@ class YamRobotState:
             link_poses=link_poses,
             base_offset=base[:3, 3],
             base_wxyz=tuple(Rotation.from_matrix(base[:3, :3]).as_quat()[[3, 0, 1, 2]]),
+            pcd_colors=np.concatenate(list(per_link_colors.values())),
+            link_pcd_colors=per_link_colors,
         )
 
     def get_mesh_points(self, observation):

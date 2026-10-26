@@ -49,6 +49,11 @@ def test_station_mesh_poses_match_direct_urdf_fk(station):
         moved = state.get_robot_snapshot(_obs(side, q=(0.4, 1.2, 1.5, 0.1, -0.2, 0.3)))
         assert not np.allclose(snapshot.pcd, moved.pcd)
         assert len(state.get_static_meshes()) >= 8
+        colors = {link: rgb for link, _, _, _, rgb in state.get_static_meshes()}
+        assert colors[f"{side}_link2"] == (0, 102, 153)  # the URDF material's rgba 0 0.4 0.6
+        assert snapshot.pcd_colors.shape == snapshot.pcd.shape and snapshot.pcd_colors.dtype == np.uint8
+        link2 = snapshot.link_pcd_colors[f"{side}_link2"]
+        assert link2.shape == snapshot.link_pcds[f"{side}_link2"].shape and (link2 == (0, 102, 153)).all()
 
 
 def test_rest_pose_is_all_zero_and_within_limits(station):

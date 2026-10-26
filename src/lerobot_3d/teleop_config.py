@@ -206,7 +206,7 @@ class TeleopSystemConfig:
     robot_calibration_paths: tuple[str | Path, ...] | None = None
     """Explicit calibration JSON path per follower; overrides ``robot_calibration_dir``."""
     tune: bool = True
-    """If true, show the viser GUI's Quit/Capture/Save-subgoal controls."""
+    """If true, show the viser GUI's Quit/Capture/Save-subgoal/Fit-table controls."""
     point_size: float = 0.003
     """Viser point radius in world-space meters (not pixels)."""
     camera_width: int = 848

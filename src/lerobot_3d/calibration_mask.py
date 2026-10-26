@@ -16,7 +16,11 @@ import numpy as np
 
 DEFAULT_SAM2_MODEL_ID = "facebook/sam2.1-hiera-large"
 
-SEGMENT_HELP = "L-click: robot  R-click: background  Enter: save  u: undo  r: reset  s/Esc: skip"
+def segment_help(target: str = "robot") -> str:
+    return f"L-click: {target}  R-click: background  Enter: save  u: undo  r: reset  s/Esc: skip"
+
+
+SEGMENT_HELP = segment_help()
 
 _KEY_ENTER = (13, 10)
 _KEY_SPACE = 32
@@ -114,7 +118,7 @@ class RobotSegmenter:
         return np.asarray(masks[int(np.argmax(scores))]) > 0
 
 
-def _render(color_bgr: np.ndarray, mask: np.ndarray | None, prompts: PromptPoints) -> np.ndarray:
+def _render(color_bgr: np.ndarray, mask: np.ndarray | None, prompts: PromptPoints, help_text: str) -> np.ndarray:
     canvas = color_bgr.copy()
     if mask is not None:
         tint = np.zeros_like(canvas)
@@ -124,14 +128,14 @@ def _render(color_bgr: np.ndarray, mask: np.ndarray | None, prompts: PromptPoint
         cv2.circle(canvas, (x, y), 6, (0, 255, 0) if label else (0, 0, 255), -1)
         cv2.circle(canvas, (x, y), 6, (255, 255, 255), 1)
     cv2.rectangle(canvas, (0, 0), (canvas.shape[1], 24), (0, 0, 0), -1)
-    cv2.putText(canvas, SEGMENT_HELP, (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+    cv2.putText(canvas, help_text, (6, 17), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
     return canvas
 
 
 def segment_interactively(
-    segmenter: RobotSegmenter, color_bgr: np.ndarray, window_name: str
+    segmenter: RobotSegmenter, color_bgr: np.ndarray, window_name: str, target: str = "robot"
 ) -> np.ndarray | None:
-    """Show ``color_bgr`` in an OpenCV window and refine a SAM2 robot mask from clicks.
+    """Show ``color_bgr`` in an OpenCV window and refine a SAM2 mask of ``target`` from clicks.
 
     Returns the ``(H, W)`` bool mask on Enter/Space, or ``None`` if the user skips (s/Esc,
     closing the window, or accepting with no points).
@@ -155,7 +159,7 @@ def segment_interactively(
     try:
         while True:
             if state["dirty"]:
-                cv2.imshow(window_name, _render(color_bgr, state["mask"], prompts))
+                cv2.imshow(window_name, _render(color_bgr, state["mask"], prompts, segment_help(target)))
                 state["dirty"] = False
             key = cv2.waitKey(20) & 0xFF
             if cv2.getWindowProperty(window_name, cv2.WND_PROP_VISIBLE) < 1:

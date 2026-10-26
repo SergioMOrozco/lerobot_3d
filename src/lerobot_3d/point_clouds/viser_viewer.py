@@ -16,9 +16,16 @@ from scipy.spatial.transform import Rotation
 
 if TYPE_CHECKING:
     from lerobot_3d.common.types import RobotSnapshot
+    from lerobot_3d.table_plane import TablePlane
 
 ROBOT_PCD_COLOR = (1.0, 0.1, 0.1)
 """Float RGB used for every robot's sampled mesh point cloud."""
+TABLE_COLOR = (60, 160, 255)
+"""RGB of the fitted table plane overlay."""
+TABLE_GRID_CELL_M = 0.05
+"""Spacing (m) of the grid drawn on the table plane; every 5th line is darker."""
+TABLE_GRID_SIZE_M = 4.0
+"""Side (m) of the square grid drawn on the table plane, centered on the table (not limited to its extent)."""
 
 
 
@@ -89,6 +96,7 @@ class ViserSceneViewer:
         self.quit = False
         self.capture = False
         self.save_subgoal = False
+        self.fit_table = False
         self._status_handle = None
         self._status_text = None
         self.camera_frustum_scale = 0.08
@@ -172,6 +180,9 @@ class ViserSceneViewer:
         quit_button = self.server.gui.add_button("Quit", color="red")
         capture_button = self.server.gui.add_button("Capture")
         save_subgoal_button = self.server.gui.add_button("Save subgoal")
+        fit_table_button = self.server.gui.add_button(
+            "Fit table", hint="Click the table in each camera's window, then fit and save its plane"
+        )
 
         @quit_button.on_click
         def _on_quit(_) -> None:
@@ -184,6 +195,42 @@ class ViserSceneViewer:
         @save_subgoal_button.on_click
         def _on_save_subgoal(_) -> None:
             self.save_subgoal = True
+
+        @fit_table_button.on_click
+        def _on_fit_table(_) -> None:
+            self.fit_table = True
+
+    def draw_table_plane(self, plane: TablePlane) -> None:
+        """Show the fitted table top as a translucent rectangle with its frame (``+z`` = normal)."""
+        X_W_table = np.asarray(plane.X_W_table, dtype=np.float64)
+        wxyz = Rotation.from_matrix(X_W_table[:3, :3]).as_quat()[[3, 0, 1, 2]]
+        hx, hy = 0.5 * np.asarray(plane.extent, dtype=np.float64)
+        self.server.scene.add_frame(
+            "/table", position=X_W_table[:3, 3], wxyz=wxyz, axes_length=0.1, axes_radius=0.004
+        )
+        self.server.scene.add_mesh_simple(
+            "/table/top",
+            vertices=np.array([[-hx, -hy, 0.0], [hx, -hy, 0.0], [hx, hy, 0.0], [-hx, hy, 0.0]], dtype=np.float32),
+            faces=np.array([[0, 1, 2], [0, 2, 3]], dtype=np.uint32),
+            color=TABLE_COLOR,
+            opacity=0.35,
+            side="double",
+            cast_shadow=False,
+            receive_shadow=False,
+        )
+        # Lifted 1 mm so it doesn't z-fight with the translucent top.
+        self.server.scene.add_grid(
+            "/table/grid",
+            width=TABLE_GRID_SIZE_M,
+            height=TABLE_GRID_SIZE_M,
+            plane="xy",
+            cell_size=TABLE_GRID_CELL_M,
+            cell_color=TABLE_COLOR,
+            section_size=5 * TABLE_GRID_CELL_M,
+            section_color=(20, 90, 200),
+            section_thickness=1.5,
+            position=(0.0, 0.0, 0.001),
+        )
 
     def set_status(self, text: str) -> None:
         """Show ``text`` in the GUI sidebar (e.g. the episode recording timer)."""
@@ -229,7 +276,7 @@ class ViserSceneViewer:
 
     def load_static_meshes(
         self,
-        meshes: list[tuple[str, str, np.ndarray, np.ndarray]],
+        meshes: list[tuple],
         robot_index: int = 0,
         base_offset: np.ndarray | None = None,
     ) -> None:
@@ -241,10 +288,13 @@ class ViserSceneViewer:
         re-uploading vertex data every frame -- these meshes are tens of thousands of
         vertices each, so resending them per frame (instead of just moving a frame) was
         the dominant per-frame cost.
+
+        Each mesh is ``(link, mesh name, vertices, faces)``, drawn grey, or
+        ``(link, mesh name, vertices, faces, rgb)`` in its own 0-255 color.
         """
         self._ensure_robot_frame(robot_index, base_offset)
         root = self._robot_root(robot_index)
-        for link_name, mesh_name, vertices, faces in meshes:
+        for link_name, mesh_name, vertices, faces, *color in meshes:
             key = (robot_index, link_name)
             if key not in self._link_frames:
                 self._link_frames[key] = self.server.scene.add_frame(
@@ -254,7 +304,7 @@ class ViserSceneViewer:
                 name=f"{root}/urdf/{link_name}/{mesh_name}",
                 vertices=np.asarray(vertices, dtype=np.float32),
                 faces=np.asarray(faces, dtype=np.uint32),
-                color=(200, 200, 200),
+                color=tuple(color[0]) if color else (200, 200, 200),
                 flat_shading=True,
             )
 
@@ -290,14 +340,17 @@ class ViserSceneViewer:
             self._robot_frames[i].wxyz = np.asarray(robot.base_wxyz)
             root = self._robot_root(i)
             robot_points = np.asarray(robot.pcd, dtype=np.float64)
-            robot_colors = np.tile(np.array([ROBOT_PCD_COLOR]), (robot_points.shape[0], 1))
+            robot_colors = robot.pcd_colors
+            if robot_colors is None:
+                robot_colors = np.tile(np.array([ROBOT_PCD_COLOR]), (robot_points.shape[0], 1))
             self._robot_handles[i] = self._upsert_point_cloud(
                 self._robot_handles.get(i), f"{root}/pcd", robot_points, robot_colors
             )
             for link_name, pts in robot.link_pcds.items():
                 key = (i, link_name)
                 self._link_handles[key] = self._upsert_point_cloud(
-                    self._link_handles.get(key), f"{root}/links/{link_name}", pts, None
+                    self._link_handles.get(key), f"{root}/links/{link_name}", pts,
+                    (robot.link_pcd_colors or {}).get(link_name),
                 )
             self.update_link_poses(robot.link_poses, robot_index=i)
 
