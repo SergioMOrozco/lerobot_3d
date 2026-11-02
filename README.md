@@ -84,7 +84,7 @@ cameras are reached over ROS 2:
 ```yaml
 robot_type: yam
 leaders:
-  - type: keyboard           # end-effector keyboard teleop; leaders: [] only observes the arms
+  - type: keyboard           # end-effector keyboard teleop (or gizmo: drag handles in viser); leaders: [] only observes the arms
 followers:                   # one entry per arm, 1 or 2
   - side: left               # reads /left/joint_states, commands /left/cmd_joint
   - side: right              #   (override with joint_topic / command_topic)
@@ -103,6 +103,7 @@ ros_cameras:
 - **Wrist cameras** (`link` set) sit at their URDF camera link, recomputed every frame from the measured joints. That's their pose unless you calibrate them (see [Performing calibration](#performing-calibration)).
 - **No followers** gives virtual arms, with no ROS: shown at the URDF rest pose (every joint 0), or driven by the keyboard. `yam_preview.yaml` in the repo root is a ready keyboard config for the virtual arms; `yam_rig.yaml` drives the real arms.
 - **Keyboard teleop** (`leaders: [{type: keyboard}]`) moves the end effectors from the terminal running `lerobot-teleop` (it needs focus). With real arms it starts from their measured pose, so nothing moves until you press a key.
+- **Gizmo teleop** (`leaders: [{type: gizmo}]`, `lerobot_3d.teleoperators.yam_gizmo`) puts a drag handle on each gripper in the viser scene and a slider per gripper; IK follows the handle (the keyboard's IK, so its keys work too). A handle dragged out of reach stays put while the arm gets as close as it can, and snaps to the reached pose on release. `yam_gizmo.yaml` drives the virtual arms. With real followers it drives them through the same speed and step limits as the keyboard.
 
   ```bash
   lerobot-teleop --config yam_rig.yaml       # real arms (needs ROS 2, see below)
@@ -169,21 +170,38 @@ Each frame stores (`<serial>` = camera serial, `<link>` = URDF link name):
 | `observation.depth.<serial>` | image `(H, W, 3)` | uint16 depth packed losslessly into R (high byte) / G (low byte) |
 | `observation.depth_scale.<serial>` | `(1,)` float32 | meters per depth unit |
 | `observation.intrinsics.<serial>` | `(3, 3)` float32 | color camera K (depth is aligned to color) |
-| `observation.extrinsics.<serial>` | `(4, 4)` float32 | `X_WC`, camera → world |
+| `observation.extrinsics.<serial>` | `(4, 4)` float32 | `X_WC`, camera → world. Only for moving cameras (wrist cameras). |
 | `observation.robot_link_pcds.<link>` | `(N, 3)` float32 | world-frame link points. Point `k` of a link is the same body point in every frame. |
 
 Joint names are in `meta/info.json` (`features.action.names`). A sidecar file, `meta/lerobot_3d.json`, records the depth encoding, camera serials, link names and frame conventions.
+
+Fixed cameras don't change pose during a capture, so their `X_WC` is stored once, under `fixed_camera_extrinsics` in the sidecar. Wrist cameras move with the arm, so they keep the per-frame feature. Appending to a dataset after recalibrating a fixed camera raises an error, since the stored extrinsics would no longer describe the new episodes: record into a new dataset instead. Datasets recorded before this change log every camera per frame, and they still load and append as they are.
+
+The sidecar also keeps the calibration the dataset was recorded with. `extrinsic_calibration` is the whole of `extrinsic_calibration.json` (camera poses, `per_arm` entries, wrist mounts, arm base poses and the table plane). `intrinsic_calibration` is `intrinsic_calibration.json`, with the recorded cameras' live values. Appending after `extrinsic_calibration.json` has changed raises an error, so every episode in a dataset shares one calibration. To read them back:
+
+```python
+from lerobot_3d.point_clouds.yam_robot_state import yam_base_poses
+from lerobot_3d.recording.dataset_loader import read_sidecar
+from lerobot_3d.table_plane import table_plane_from_extrinsics
+
+sidecar = read_sidecar("path/to/dataset")
+table = table_plane_from_extrinsics(sidecar["extrinsic_calibration"])  # None if it was never fit
+base_poses = yam_base_poses(sidecar["extrinsic_calibration"])          # {side: X_W_base}
+intrinsics = sidecar["intrinsic_calibration"]                          # {serial: fl_x, fl_y, cx, cy, w, h}
+```
 
 `lerobot_3d.recording.dataset_loader` turns a frame back into the live pipeline's `Datapoint`s (BGR color, raw uint16 depth, intrinsics, `X_WC`). Fusion, masking and segmentation code then works on recorded data unchanged:
 
 ```python
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot_3d.point_clouds.camera_stream import get_fused_point_cloud
-from lerobot_3d.recording.dataset_loader import frame_link_pcds, frame_to_datapoints
+from lerobot_3d.recording.dataset_loader import frame_link_pcds, frame_to_datapoints, read_fixed_extrinsics
 
-ds = LeRobotDataset("local/my_task", root="path/to/dataset")
+root = "path/to/dataset"
+ds = LeRobotDataset("local/my_task", root=root)
+extrinsics = read_fixed_extrinsics(root)
 item = ds[0]
-datapoints = frame_to_datapoints(item)            # set dp.obj_mask per camera to segment
+datapoints = frame_to_datapoints(item, extrinsics=extrinsics)  # set dp.obj_mask per camera to segment
 scene_pcd, _ = get_fused_point_cloud(datapoints)  # world-frame fused cloud
 links = frame_link_pcds(item)                     # {link_name: (N, 3)} world frame
 ```

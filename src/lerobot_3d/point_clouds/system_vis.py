@@ -19,6 +19,7 @@ from lerobot_3d.point_clouds.camera_stream import MultiRealSenseStream, get_fuse
 from lerobot_3d.point_clouds.viser_viewer import CameraView, ViserSceneViewer, grid_offsets
 from lerobot_3d.point_clouds.robot_state import RobotState
 from lerobot_3d.point_clouds.yam_robot_state import YamRobotState, yam_base_poses
+from lerobot_3d.recording.dataset_recorder import intrinsics_entry
 from lerobot_3d.calibration_mask import (
     SEGMENT_HELP,
     RobotSegmenter,
@@ -46,15 +47,7 @@ def write_intrinsics(datapoints, path="intrinsic_calibration.json") -> None:
         with open(path) as f:
             intrinsics = json.load(f)
     for datapoint in datapoints:
-        intr = datapoint.color_intrinsics
-        intrinsics[datapoint.serial] = {
-            'fl_x': intr.fx,
-            'fl_y': intr.fy,
-            'cx': intr.ppx,
-            'cy': intr.ppy,
-            'w': datapoint.color.shape[1],
-            'h': datapoint.color.shape[0],
-        }
+        intrinsics[datapoint.serial] = intrinsics_entry(datapoint)
     with open(path, "w") as f:
         json.dump(intrinsics, f, indent=8)
 

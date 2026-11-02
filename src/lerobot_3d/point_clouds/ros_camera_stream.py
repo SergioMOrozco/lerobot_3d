@@ -146,6 +146,7 @@ class RosCameraStream:
                 X_WC=self.camera_pose(key, cam.link, link_poses),
                 color_intrinsics=SimpleNamespace(fx=float(K[0, 0]), fy=float(K[1, 1]),
                                                  ppx=float(K[0, 2]), ppy=float(K[1, 2])),
+                moving=cam.link is not None,
             ))
         return datapoints
 

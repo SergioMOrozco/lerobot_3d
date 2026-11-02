@@ -487,6 +487,15 @@ def test_yam_keyboard_leader_drives_virtual_arms(teleop_config_yaml_factory):
     assert config.yam_sides == ("left", "right")
 
 
+def test_yam_gizmo_leader_and_unknown_leader_type(teleop_config_yaml_factory):
+    config = load_teleop_system_config(teleop_config_yaml_factory(
+        {"robot_type": "yam", "leaders": [{"type": "gizmo"}], "followers": [], "realsense_serials": []}))
+    assert config.leaders == (YamLeaderConfig("gizmo"),)
+    with pytest.raises(ValueError, match="one leader"):
+        load_teleop_system_config(teleop_config_yaml_factory(
+            {"robot_type": "yam", "leaders": [{"type": "spacemouse"}], "followers": [], "realsense_serials": []}))
+
+
 def test_yam_keyboard_can_drive_real_arms_with_custom_topics(teleop_config_yaml_factory):
     config = load_teleop_system_config(teleop_config_yaml_factory({
         "robot_type": "yam", "leaders": [{"type": "keyboard"}], "realsense_serials": [],

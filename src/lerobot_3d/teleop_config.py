@@ -6,9 +6,10 @@ to change hardware wiring or run settings; no code changes needed.
 
 ``robot_type`` picks the robot: ``so101`` (default) or ``yam``. For ``yam``, ``followers`` lists the
 station's arms by ``side`` (``left``/``right``), read and commanded over ROS 2 (``/<side>/joint_states``,
-``/<side>/cmd_joint`` by default). The one YAM leader is a keyboard (``leaders: [{type: keyboard}]``)
-that moves the end effectors: of the real arms with followers, of virtual arms without. With followers
-and no leader, the real arms are only observed.
+``/<side>/cmd_joint`` by default). The one YAM leader moves the end effectors - of the real arms with
+followers, of virtual arms without: a keyboard (``leaders: [{type: keyboard}]``) or drag handles in the
+viser scene (``leaders: [{type: gizmo}]``, which also takes the keyboard's keys). With followers and no
+leader, the real arms are only observed.
 
 Cameras: ``realsense_serials`` (USB RealSense) and ``ros_cameras`` (ROS 2 topics) may be mixed. A ROS
 camera without a ``link`` is fixed in the world like a RealSense one; with a ``link`` (YAM only) it
@@ -69,9 +70,13 @@ class YamArmConfig:
     """``sensor_msgs/JointState`` targets are published to; ``None`` -> ``/<side>/cmd_joint``."""
 
 
+YAM_LEADER_TYPES = ("keyboard", "gizmo")
+
+
 @dataclass(frozen=True)
 class YamLeaderConfig:
-    """A YAM teleop device. Only ``keyboard`` exists: end-effector control from the terminal."""
+    """A YAM teleop device, one of ``YAM_LEADER_TYPES``: ``keyboard`` (end-effector control from the
+    terminal) or ``gizmo`` (a drag handle per gripper in the viser scene, plus gripper sliders)."""
 
     type: str = "keyboard"
 
@@ -330,9 +335,9 @@ class TeleopSystemConfig:
     def _validate_yam(self) -> None:
         if self.leaders:
             if len(self.leaders) > 1 or not all(
-                isinstance(leader, YamLeaderConfig) and leader.type == "keyboard" for leader in self.leaders
+                isinstance(leader, YamLeaderConfig) and leader.type in YAM_LEADER_TYPES for leader in self.leaders
             ):
-                raise ValueError("robot_type: yam supports one leader, {type: keyboard}.")
+                raise ValueError(f"robot_type: yam supports one leader, of type {YAM_LEADER_TYPES}.")
         if self.num_robots != 1:
             raise ValueError("num_robots is for SO101 virtual robots; list YAM arms under followers instead.")
         sides = [arm.side for arm in self.followers]

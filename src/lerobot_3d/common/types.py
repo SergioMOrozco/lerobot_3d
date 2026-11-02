@@ -22,6 +22,8 @@ class Datapoint:
     """Raw motor-space observation (``"<joint>.pos"`` keys) from the follower that produced
     this step's robot state -- same format as ``Follower.get_observation()``/``send_action()``,
     so it can be fed straight into ``RobotState`` or a new action without reconversion."""
+    moving: bool = False
+    """``X_WC`` changes between frames (a wrist camera), so a dataset must log it per frame."""
 
 
 @dataclass

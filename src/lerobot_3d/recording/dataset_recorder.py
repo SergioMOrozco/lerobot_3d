@@ -9,7 +9,13 @@ Per-frame schema (``<s>`` = camera serial, ``<link>`` = URDF link name):
   (see :mod:`lerobot_3d.recording.depth_codec`).
 - ``observation.depth_scale.<s>``: float32 ``(1,)`` meters per depth unit.
 - ``observation.intrinsics.<s>``: float32 ``(3, 3)`` color camera K (depth is aligned to color).
-- ``observation.extrinsics.<s>``: float32 ``(4, 4)`` ``X_WC`` (camera -> world).
+- ``observation.extrinsics.<s>``: float32 ``(4, 4)`` ``X_WC`` (camera -> world), only for cameras
+  that move (wrist cameras). A fixed camera's ``X_WC`` is stored once, in the sidecar's
+  ``fixed_camera_extrinsics``.
+
+The sidecar also keeps the calibration the dataset was recorded with: ``extrinsic_calibration`` is
+the whole extrinsics file (table plane and arm base poses included), and ``intrinsic_calibration``
+the intrinsics file with the recorded cameras' live values.
 - ``observation.robot_link_pcds.<link>``: float32 ``(N, 3)`` world-frame points; point ``k``
   of a link is the same body point in every frame.
 
@@ -32,11 +38,12 @@ from lerobot.utils.constants import HF_LEROBOT_HOME
 from scipy.spatial.transform import Rotation
 
 from lerobot_3d.common.types import Datapoint, RobotSnapshot
+from lerobot_3d.point_clouds.ros_camera_stream import extrinsics_path, read_extrinsics
 from lerobot_3d.recording.depth_codec import DEPTH_ENCODING, pack_depth
 
 SIDECAR_NAME = "lerobot_3d.json"
 """Extra metadata written to ``<root>/meta/`` next to LeRobot's own ``info.json``."""
-SIDECAR_FORMAT_VERSION = 1
+SIDECAR_FORMAT_VERSION = 2
 
 ACTION_KEY = "action"
 STATE_KEY = "observation.state"
@@ -60,6 +67,19 @@ def intrinsics_matrix(color_intrinsics) -> np.ndarray:
         ],
         dtype=np.float32,
     )
+
+
+def intrinsics_entry(datapoint: Datapoint) -> dict:
+    """A camera's ``intrinsic_calibration.json`` entry."""
+    intr = datapoint.color_intrinsics
+    return {
+        "fl_x": intr.fx,
+        "fl_y": intr.fy,
+        "cx": intr.ppx,
+        "cy": intr.ppy,
+        "w": datapoint.color.shape[1],
+        "h": datapoint.color.shape[0],
+    }
 
 
 def _per_robot(snapshots, actions) -> tuple[list[RobotSnapshot], list[dict[str, float]]]:
@@ -115,7 +135,8 @@ def build_features(
         features[f"{DEPTH_PREFIX}{s}"] = {"dtype": "image", "shape": (h, w, 3), "names": _IMAGE_NAMES}
         features[f"{DEPTH_SCALE_PREFIX}{s}"] = {"dtype": "float32", "shape": (1,), "names": None}
         features[f"{INTRINSICS_PREFIX}{s}"] = {"dtype": "float32", "shape": (3, 3), "names": None}
-        features[f"{EXTRINSICS_PREFIX}{s}"] = {"dtype": "float32", "shape": (4, 4), "names": None}
+        if dp.moving:
+            features[f"{EXTRINSICS_PREFIX}{s}"] = {"dtype": "float32", "shape": (4, 4), "names": None}
     for link_name, pts in world_link_pcds(snapshots).items():
         features[f"{LINK_PCD_PREFIX}{link_name}"] = {
             "dtype": "float32",
@@ -150,21 +171,37 @@ def build_frame(
         frame[f"{DEPTH_PREFIX}{s}"] = pack_depth(np.asarray(dp.depth, dtype=np.uint16))
         frame[f"{DEPTH_SCALE_PREFIX}{s}"] = np.array([dp.depth_scale], dtype=np.float32)
         frame[f"{INTRINSICS_PREFIX}{s}"] = intrinsics_matrix(dp.color_intrinsics)
-        frame[f"{EXTRINSICS_PREFIX}{s}"] = np.asarray(dp.X_WC, dtype=np.float32)
+        if f"{EXTRINSICS_PREFIX}{s}" in features:
+            frame[f"{EXTRINSICS_PREFIX}{s}"] = np.asarray(dp.X_WC, dtype=np.float32)
     for link_name, pts in world_link_pcds(snapshots).items():
         frame[f"{LINK_PCD_PREFIX}{link_name}"] = np.asarray(pts, dtype=np.float32)
     return frame
 
 
 def _comparable(features: dict) -> dict:
-    """Only the keys this module writes, with JSON-roundtripped shapes normalized to tuples."""
-    prefixes = (RGB_PREFIX, DEPTH_PREFIX, DEPTH_SCALE_PREFIX, INTRINSICS_PREFIX,
-                EXTRINSICS_PREFIX, LINK_PCD_PREFIX)
+    """Only the keys this module writes, with JSON-roundtripped shapes normalized to tuples.
+
+    Extrinsics are left out: they follow the existing dataset's layout, and datasets recorded
+    before ``fixed_camera_extrinsics`` log every camera's per frame."""
+    prefixes = (RGB_PREFIX, DEPTH_PREFIX, DEPTH_SCALE_PREFIX, INTRINSICS_PREFIX, LINK_PCD_PREFIX)
     return {
         key: (ft["dtype"], tuple(ft["shape"]))
         for key, ft in features.items()
         if key in (ACTION_KEY, STATE_KEY) or key.startswith(prefixes)
     }
+
+
+def _read_sidecar_or_empty(root: Path) -> dict:
+    path = root / "meta" / SIDECAR_NAME
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+def read_fixed_extrinsics(root: str | Path) -> dict[str, np.ndarray]:
+    """``{serial: X_WC}`` of the cameras stored once in the sidecar; pass to ``frame_to_datapoints``.
+
+    Empty for a dataset without any (its extrinsics are all per-frame features)."""
+    fixed = _read_sidecar_or_empty(Path(root).expanduser()).get("fixed_camera_extrinsics", {})
+    return {serial: np.array(X_WC, dtype=np.float64) for serial, X_WC in fixed.items()}
 
 
 class LeRobotDatasetRecorder:
@@ -173,6 +210,9 @@ class LeRobotDatasetRecorder:
     The dataset is created on the first recorded frame (its shapes come from real data), or
     opened for appending if ``root`` already holds one. Call :meth:`finalize` when done --
     LeRobot datasets are not loadable until their parquet writers are closed.
+
+    ``extrinsic_json`` and ``intrinsic_json`` are the calibration files to keep with the dataset.
+    Appending raises if ``extrinsic_json`` no longer matches the copy in the dataset.
     """
 
     def __init__(
@@ -184,6 +224,8 @@ class LeRobotDatasetRecorder:
         task: str = "teleop",
         robot_type: str = "so101_follower",
         image_writer_threads_per_camera: int = 4,
+        extrinsic_json: str | Path | None = None,
+        intrinsic_json: str | Path = "intrinsic_calibration.json",
     ):
         self.repo_id = repo_id
         self.root = Path(root).expanduser() if root is not None else HF_LEROBOT_HOME / repo_id
@@ -191,9 +233,12 @@ class LeRobotDatasetRecorder:
         self.task = task
         self.robot_type = robot_type
         self.image_writer_threads_per_camera = image_writer_threads_per_camera
+        self.extrinsic_json = extrinsic_json
+        self.intrinsic_json = intrinsic_json
 
         self.dataset: LeRobotDataset | None = None
         self.features: dict | None = None
+        self.fixed_extrinsics: dict[str, np.ndarray] = {}
         self.recording = False
         self.episode_frames = 0
 
@@ -205,6 +250,8 @@ class LeRobotDatasetRecorder:
                     f"but dataset_fps is {self.fps}. Use a new dataset_repo_id/dataset_root."
                 )
             self.features = self.dataset.meta.features
+            self.fixed_extrinsics = read_fixed_extrinsics(self.root)
+            self._check_extrinsic_calibration()
             n_cameras = sum(1 for key in self.features if key.startswith(RGB_PREFIX))
             if n_cameras:
                 self.dataset.start_image_writer(
@@ -277,6 +324,7 @@ class LeRobotDatasetRecorder:
                     "cameras, image size, robot links, or joints). Record into a new "
                     "dataset_repo_id/dataset_root instead."
                 )
+            self._check_fixed_extrinsics(datapoints)
             return
         n_cameras = len(datapoints)
         self.dataset = LeRobotDataset.create(
@@ -289,8 +337,36 @@ class LeRobotDatasetRecorder:
             image_writer_threads=self.image_writer_threads_per_camera * n_cameras,
         )
         self.features = self.dataset.meta.features
+        self.fixed_extrinsics = {
+            dp.serial: np.array(dp.X_WC, dtype=np.float64) for dp in datapoints if not dp.moving
+        }
         self._write_sidecar(datapoints, snapshots)
         print(f"[recorder] Created dataset at {self.root}.")
+
+    def _extrinsic_calibration(self) -> dict:
+        return {} if self.extrinsic_json is None else read_extrinsics(extrinsics_path(self.extrinsic_json))
+
+    def _check_extrinsic_calibration(self) -> None:
+        """Episodes in one dataset share one calibration (older datasets don't store a copy)."""
+        stored = _read_sidecar_or_empty(self.root).get("extrinsic_calibration")
+        if self.extrinsic_json is not None and stored is not None and stored != self._extrinsic_calibration():
+            raise ValueError(
+                f"{self.extrinsic_json} has changed since the dataset at {self.root} was recorded "
+                "(cameras, table plane or arm bases recalibrated). Record into a new "
+                "dataset_repo_id/dataset_root instead."
+            )
+
+    def _check_fixed_extrinsics(self, datapoints) -> None:
+        """A camera without a per-frame feature must still be where the sidecar says it is."""
+        for dp in datapoints:
+            if f"{EXTRINSICS_PREFIX}{dp.serial}" in self.features:
+                continue
+            if not np.allclose(dp.X_WC, self.fixed_extrinsics[dp.serial]):
+                raise ValueError(
+                    f"Camera {dp.serial}'s extrinsics don't match the ones stored with the dataset "
+                    f"at {self.root} (recalibrated, or the camera moved). Record into a new "
+                    "dataset_repo_id/dataset_root instead."
+                )
 
     def _write_sidecar(self, datapoints, snapshots) -> None:
         world_frame = (
@@ -306,6 +382,10 @@ class LeRobotDatasetRecorder:
             "depth_aligned_to": "color",
             "world_frame": world_frame,
             "camera_serials": [dp.serial for dp in datapoints],
+            "fixed_camera_extrinsics": {s: X_WC.tolist() for s, X_WC in self.fixed_extrinsics.items()},
+            "extrinsic_calibration": self._extrinsic_calibration(),
+            "intrinsic_calibration": read_extrinsics(self.intrinsic_json)
+            | {dp.serial: intrinsics_entry(dp) for dp in datapoints},
             "robot_links": list(world_link_pcds(snapshots)),
             "joint_names": list(_merged([s.joint_positions for s in snapshots], "joint names")),
         }

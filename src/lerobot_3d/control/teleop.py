@@ -14,6 +14,7 @@ from lerobot_3d.point_clouds.system_vis import SystemStateViewer
 from lerobot_3d.recording.dataset_recorder import LeRobotDatasetRecorder
 from lerobot_3d.recording.episode_controller import EpisodeController, EpisodeState
 from lerobot_3d.recording.keyboard import TerminalKeyListener
+from lerobot_3d.teleoperators.yam_gizmo import GIZMO_HELP, YamGizmo
 from lerobot_3d.teleoperators.yam_keyboard import KEYBOARD_HELP
 
 _OVERRUN_WARN_INTERVAL_S = 5.0
@@ -47,11 +48,14 @@ class TeleopPointCloudSystem:
     def __init__(self, config: TeleopSystemConfig):
         self.config = config
         if config.robot_type == "yam":
+            from lerobot_3d.teleoperators.yam_gizmo import YamGizmo, YamGizmoConfig
             from lerobot_3d.teleoperators.yam_keyboard import YamKeyboard, YamKeyboardConfig
 
             self.leaders = [
-                YamKeyboard(YamKeyboardConfig(sides=config.yam_sides, urdf_path=config.urdf_path, id="yam_keyboard"))
-                for _ in config.leaders
+                YamGizmo(YamGizmoConfig(sides=config.yam_sides, urdf_path=config.urdf_path, id="yam_gizmo"))
+                if leader.type == "gizmo"
+                else YamKeyboard(YamKeyboardConfig(sides=config.yam_sides, urdf_path=config.urdf_path, id="yam_keyboard"))
+                for leader in config.leaders
             ]
         else:
             self.leaders = [
@@ -81,6 +85,12 @@ class TeleopPointCloudSystem:
             # Start the keyboard from where the real arms are, so the first command doesn't move them.
             for follower in self.viewer.followers:
                 self.leaders[0].set_joints(follower.get_observation())
+        if self.config.robot_type == "yam":
+            from lerobot_3d.teleoperators.yam_gizmo import YamGizmo
+
+            if isinstance(self.leaders[0], YamGizmo):
+                # Handles start where the arms are (after set_joints), in the scene the arms are drawn in.
+                self.leaders[0].attach(self.viewer.viewer.server)
         print("Connected.")
 
     def step(
@@ -205,6 +215,7 @@ def main() -> None:
                 fps=config.dataset_fps,
                 task=config.dataset_task,
                 robot_type="yam_follower" if config.robot_type == "yam" else "so101_follower",
+                extrinsic_json=config.extrinsic_json,
             ),
             fps=config.dataset_fps,
             log=status_line.log,
@@ -229,6 +240,8 @@ def main() -> None:
     try:
         with TerminalKeyListener() if recording or keyboard else contextlib.nullcontext() as keys:
             if keyboard is not None:
+                if isinstance(keyboard, YamGizmo):
+                    status_line.log(f"[gizmo] {GIZMO_HELP}")
                 status_line.log(f"[keyboard] {KEYBOARD_HELP}")
             if controller is not None:
                 controller.print_help()

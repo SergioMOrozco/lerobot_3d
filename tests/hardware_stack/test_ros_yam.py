@@ -354,7 +354,12 @@ def test_teleop_step_records_measured_joints_into_a_two_arm_dataset(hub, yam_con
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     from lerobot_3d.control.teleop import TeleopPointCloudSystem
-    from lerobot_3d.recording.dataset_loader import frame_link_pcds, frame_to_datapoints, read_sidecar
+    from lerobot_3d.recording.dataset_loader import (
+        frame_link_pcds,
+        frame_to_datapoints,
+        read_fixed_extrinsics,
+        read_sidecar,
+    )
     from lerobot_3d.recording.dataset_recorder import LeRobotDatasetRecorder, world_link_pcds
 
     system = TeleopPointCloudSystem(yam_config())
@@ -384,8 +389,12 @@ def test_teleop_step_records_measured_joints_into_a_two_arm_dataset(hub, yam_con
     assert any(n.startswith("left_") for n in links) and any(n.startswith("right_") for n in links)
     for name, pts in links.items():  # world frame: each arm's station pose applied
         np.testing.assert_allclose(pts, expected_links[name], atol=1e-5)
-    serials = [dp.serial for dp in frame_to_datapoints(item)]
-    assert serials == ["camera_top", "camera_left_wrist", "camera_right_wrist"]
+    restored = frame_to_datapoints(item, extrinsics=read_fixed_extrinsics(tmp_path / "ds"))
+    assert [dp.serial for dp in restored] == ["camera_top", "camera_left_wrist", "camera_right_wrist"]
+    # Wrist cameras ride the arms, so only they keep per-frame extrinsics.
+    assert [dp.moving for dp in restored] == [False, True, True]
+    for dp, live in zip(restored, datapoints):
+        np.testing.assert_allclose(dp.X_WC, live.X_WC, atol=1e-6)
     assert read_sidecar(tmp_path / "ds")["world_frame"].startswith("YAM station URDF world")
 
 

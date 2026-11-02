@@ -26,3 +26,16 @@ ros_cameras:
   - namespace: /camera/top          # overhead; X_WC "camera_top" in extrinsic_calibration.json is the
                                     # URDF's nominal top_camera pose until you calibrate it
 viser_port: 8080
+
+
+# Camera extrinsics JSON (cwd, LEROBOT_3D_EXTRINSIC_JSON, or src/ next to package).
+extrinsic_json: extrinsic_calibration.json
+
+# Non-empty -> record episodes into a LeRobotDataset (e.g. local/my_task). In the terminal:
+# Enter starts an episode, Space ends it, then y/n keeps or discards it. dataset_root: null
+# uses LeRobot's default location (HF_LEROBOT_HOME/<repo_id>); an existing dataset there is
+# appended to. The teleop loop runs at dataset_fps while recording is configured.
+dataset_repo_id: "Sorozco0612/box_and_bin"
+dataset_root: null
+dataset_task: teleop
+dataset_fps: 15

@@ -1,0 +1,11 @@
+# YAM gizmo teleop: drag a handle on each virtual arm's gripper in the viser page, no hardware or ROS.
+#   lerobot-teleop --config yam_gizmo.yaml      then open http://localhost:8080
+# Each gripper has a slider in the GUI panel; the keyboard teleop's keys (in the terminal) also work.
+# The arms start folded at the URDF rest pose: drag a handle up or forward first.
+robot_type: yam
+leaders:
+  - type: gizmo
+followers: []
+realsense_serials: []
+ros_cameras: []
+viser_port: 8080
