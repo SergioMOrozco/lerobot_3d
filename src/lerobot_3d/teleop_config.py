@@ -44,7 +44,7 @@ YAM_SIDES = ("left", "right")
 
 ROS_COLOR_TOPIC = "color/image_raw/compressed"
 ROS_COLOR_INFO_TOPIC = "color/camera_info"
-ROS_DEPTH_TOPIC = "depth_raw/image_rect_raw/compressedDepth"
+ROS_DEPTH_TOPIC = "depth_raw/image_rect_raw"
 ROS_DEPTH_INFO_TOPIC = "depth_raw/camera_info"
 
 
@@ -92,8 +92,9 @@ class RosCameraConfig:
     the world, calibrated through ``extrinsic_calibration.json`` like a RealSense camera."""
     color_topic: str = ROS_COLOR_TOPIC
     depth_topic: str = ROS_DEPTH_TOPIC
-    """Lossless (PNG) ``compressedDepth``. Point this at the driver's depth aligned to color (e.g.
-    ``aligned_depth_to_color/image_raw/compressedDepth``) to skip per-frame registration."""
+    """Raw 16UC1 ``sensor_msgs/Image`` (mm) by default; a lossless (PNG) ``compressedDepth`` topic also
+    works (picked by its last segment), but subscribing to the overhead rig's ``compressedDepth`` stalls its
+    color stream. Point this at the driver's depth aligned to color to skip per-frame registration."""
     color_info_topic: str = ROS_COLOR_INFO_TOPIC
     depth_info_topic: str = ROS_DEPTH_INFO_TOPIC
 

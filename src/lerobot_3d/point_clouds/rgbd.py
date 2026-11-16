@@ -20,6 +20,16 @@ def decode_color(fmt: str, data: bytes) -> np.ndarray:
     return np.ascontiguousarray(image[:, :, ::-1])
 
 
+def decode_raw_depth(encoding: str, height: int, width: int, step: int, is_bigendian: bool, data) -> np.ndarray:
+    """Uncompressed ``sensor_msgs/Image`` depth (``16UC1``/``mono16``, millimetres) -> ``(H, W)`` uint16."""
+    if encoding not in ("16UC1", "mono16"):
+        raise ValueError(f"Expected 16UC1/mono16 raw depth, got encoding {encoding!r}")
+    if step < width * 2 or len(data) < step * height:
+        raise ValueError(f"Raw depth buffer of {len(data)} bytes doesn't fit {width}x{height} (step {step})")
+    rows = np.frombuffer(bytes(data), np.uint8)[: step * height].reshape(height, step)[:, : width * 2]
+    return rows.copy().view(">u2" if is_bigendian else "<u2").astype(np.uint16).reshape(height, width)
+
+
 def decode_depth(fmt: str, data: bytes) -> np.ndarray:
     """Lossless ``compressedDepth`` (PNG behind a 12-byte header) or plain PNG -> ``(H, W)`` uint16."""
     import cv2

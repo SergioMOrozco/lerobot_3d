@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from lerobot_3d.point_clouds.rgbd import decode_color, decode_depth
+from lerobot_3d.point_clouds.rgbd import decode_color, decode_depth, decode_raw_depth
 from lerobot_3d.teleop_config import (
     ROS_COLOR_INFO_TOPIC,
     ROS_COLOR_TOPIC,
@@ -57,6 +57,11 @@ def joint_observation(names, positions, side: str) -> tuple[dict[str, float], bo
         opening = None
     observation[f"{side}_gripper.pos"] = 0.0 if opening is None else opening
     return observation, opening is not None
+
+
+def is_compressed_topic(topic: str) -> bool:
+    """An image_transport ``compressed``/``compressedDepth`` topic (``CompressedImage``), else a raw ``Image``."""
+    return topic.rstrip("/").rsplit("/", 1)[-1] in ("compressed", "compressedDepth")
 
 
 def tf_matrix(translation, rotation_xyzw) -> np.ndarray:
@@ -171,9 +176,10 @@ class RosHub:
         color_info_topic: str = ROS_COLOR_INFO_TOPIC,
         depth_info_topic: str = ROS_DEPTH_INFO_TOPIC,
     ) -> None:
-        """Subscribe to one camera; topic names are relative to ``namespace``."""
+        """Subscribe to one camera; topic names are relative to ``namespace``. ``depth_topic`` may be
+        raw (``sensor_msgs/Image``, 16UC1) or ``compressedDepth``, told apart by its last segment."""
         from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
-        from sensor_msgs.msg import CameraInfo, CompressedImage
+        from sensor_msgs.msg import CameraInfo, CompressedImage, Image
         from tf2_msgs.msg import TFMessage
 
         ns = namespace.rstrip("/")
@@ -191,8 +197,12 @@ class RosHub:
                 )
             self.node.create_subscription(
                 CompressedImage, f"{ns}/{color_topic}", lambda m: self._on_color(ns, m), sensor_qos)
-            self.node.create_subscription(
-                CompressedImage, f"{ns}/{depth_topic}", lambda m: self._on_depth(ns, m), sensor_qos)
+            if is_compressed_topic(depth_topic):
+                self.node.create_subscription(
+                    CompressedImage, f"{ns}/{depth_topic}", lambda m: self._on_depth(ns, m), sensor_qos)
+            else:
+                self.node.create_subscription(
+                    Image, f"{ns}/{depth_topic}", lambda m: self._on_raw_depth(ns, m), sensor_qos)
             self.node.create_subscription(
                 CameraInfo, f"{ns}/{color_info_topic}", lambda m: self._on_info(ns, m, "color"), sensor_qos)
             self.node.create_subscription(
@@ -270,6 +280,17 @@ class RosHub:
         except ValueError as e:
             self._note_error(ns, str(e))
             return
+        self._store_depth(ns, depth)
+
+    def _on_raw_depth(self, ns, msg) -> None:
+        try:
+            depth = decode_raw_depth(msg.encoding, msg.height, msg.width, msg.step, msg.is_bigendian, msg.data)
+        except ValueError as e:
+            self._note_error(ns, str(e))
+            return
+        self._store_depth(ns, depth)
+
+    def _store_depth(self, ns, depth) -> None:
         with self._lock:
             cam = self._cameras[ns]
             cam.depth, cam.depth_arrival = depth, time.monotonic()

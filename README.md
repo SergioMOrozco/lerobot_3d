@@ -99,7 +99,7 @@ ros_cameras:
 
 - **Arms** are LeRobot robots (`lerobot_3d.robots.yam_follower.YamFollower`, registered as `yam_follower`). Each reads `sensor_msgs/JointState` from its `joint_topic` (`<side>_joint1..6` in radians, `<side>_gripper` as an opening from 0 closed to 1 open; a `<side>_joint7` finger travel in metres also works) and publishes `JointState` targets with the same names on its `command_topic`. Observations and actions use LeRobot's layout, `left_joint1.pos … left_joint6.pos, left_gripper.pos`, with the same units.
 - **Command safety**: the YAM rejects targets more than 0.35 rad from where a joint is, so `send_action` limits every command twice: targets move at most 1 rad/s (gripper: 1.5 openings/s) from the previous command, and never more than 0.3 rad from the measured joint. Tune with `YamFollowerConfig`'s `max_joint_speed_rad_s`, `max_gripper_speed`, `max_step_rad`.
-- **Cameras**: each `ros_cameras` entry reads `color/image_raw/compressed`, lossless `depth_raw/image_rect_raw/compressedDepth`, both `camera_info` topics, and the depth-to-color transform from `/tf_static`, all under its `namespace`; override any of them with `color_topic`, `depth_topic`, `color_info_topic`, `depth_info_topic`. Depth is registered to the color image every frame (about 40 ms per 640×480 camera), so if the driver can publish depth already aligned to color (the RealSense ROS driver's `align_depth`), point `depth_topic`/`depth_info_topic` at that and the registration is skipped. A camera is named after its namespace (`/camera/top` → `camera_top`) in calibration files and datasets. `ros_cameras` and `realsense_serials` can be mixed, and fixed ROS cameras also work with `robot_type: so101`.
+- **Cameras**: each `ros_cameras` entry reads `color/image_raw/compressed`, raw 16UC1 `depth_raw/image_rect_raw`, both `camera_info` topics, and the depth-to-color transform from `/tf_static`, all under its `namespace`; override any of them with `color_topic`, `depth_topic`, `color_info_topic`, `depth_info_topic`. A `depth_topic` ending in `compressedDepth` is read as lossless PNG `CompressedImage` instead, but don't use it on the YAM rig: subscribing to the overhead camera's `compressedDepth` stops its color stream on the Jetson side, leaving viser stuck on the first color frame. Depth is registered to the color image every frame (about 40 ms per 640×480 camera), so if the driver can publish depth already aligned to color (the RealSense ROS driver's `align_depth`), point `depth_topic`/`depth_info_topic` at that and the registration is skipped. A camera is named after its namespace (`/camera/top` → `camera_top`) in calibration files and datasets. `ros_cameras` and `realsense_serials` can be mixed, and fixed ROS cameras also work with `robot_type: so101`.
 - **Wrist cameras** (`link` set) sit at their URDF camera link, recomputed every frame from the measured joints. That's their pose unless you calibrate them (see [Performing calibration](#performing-calibration)).
 - **No followers** gives virtual arms, with no ROS: shown at the URDF rest pose (every joint 0), or driven by the keyboard. `yam_preview.yaml` in the repo root is a ready keyboard config for the virtual arms; `yam_rig.yaml` drives the real arms.
 - **Keyboard teleop** (`leaders: [{type: keyboard}]`) moves the end effectors from the terminal running `lerobot-teleop` (it needs focus). With real arms it starts from their measured pose, so nothing moves until you press a key.
@@ -207,6 +207,18 @@ links = frame_link_pcds(item)                     # {link_name: (N, 3)} world fr
 ```
 
 To record from your own loop (e.g. with `step(action)`), use `LeRobotDatasetRecorder` directly: `start_episode()`, `add_frame(datapoints, robot_states[0], action)`, `stop_episode()`, then `save_episode()` or `discard_episode()`, and `finalize()` at the end.
+
+### Trimming episodes
+
+`lerobot-trim` cuts idle frames off the start and end of episodes. It opens a viser page (`--port`, default 8080) that shows every camera for the current frame. Scrub or play an episode, then mark the first and last frame to keep, either with "First/Last kept frame = current" or with the Keep frames slider. You can also drop a whole episode. Frames outside the cut are dimmed. "Save trimmed copy" writes a new dataset (default `<repo-id>_trimmed`) and never modifies the source.
+
+```bash
+lerobot-trim --repo-id Sorozco0612/tblock_demos                  # pick cut points in viser
+lerobot-trim --repo-id Sorozco0612/tblock_demos --keep 0:24:81   # or directly: episode 0, frames 24..81
+lerobot-trim --repo-id my/data --keep 0:10:90 2:5:60 --drop 1    # several episodes; unlisted ones are kept whole
+```
+
+Kept frames are copied as-is: actions, state, depth (bit-exact), camera intrinsics and extrinsics, and link clouds. RGB video is re-encoded, which adds one more lossy encode. The sidecar is copied, with a `trim` entry that records each new episode's source episode and frame range.
 
 ### Pushing a dataset to the Hugging Face Hub
 

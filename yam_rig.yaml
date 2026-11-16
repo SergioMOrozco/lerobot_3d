@@ -16,13 +16,13 @@ followers:
   - side: right              # /right/joint_states -> /right/cmd_joint
 realsense_serials: []
 # Cameras: add once you know each one's depth topic (`ros2 topic list | grep camera`). Each needs
-# color/image_raw/compressed, a lossless compressedDepth topic, both camera_info topics and
+# color/image_raw/compressed, raw depth (depth_raw/image_rect_raw), both camera_info topics and
 # /tf_static. A fixed camera (no link) also needs an "X_WC" entry in extrinsic_calibration.json.
 ros_cameras:
-  - namespace: /camera/left_wrist
-    link: left_camera
-  - namespace: /camera/right_wrist
-    link: right_camera
+  #- namespace: /camera/left_wrist
+  #  link: left_camera
+  #- namespace: /camera/right_wrist
+  #  link: right_camera
   - namespace: /camera/top          # overhead; X_WC "camera_top" in extrinsic_calibration.json is the
                                     # URDF's nominal top_camera pose until you calibrate it
 viser_port: 8080
@@ -35,7 +35,7 @@ extrinsic_json: extrinsic_calibration.json
 # Enter starts an episode, Space ends it, then y/n keeps or discards it. dataset_root: null
 # uses LeRobot's default location (HF_LEROBOT_HOME/<repo_id>); an existing dataset there is
 # appended to. The teleop loop runs at dataset_fps while recording is configured.
-dataset_repo_id: "Sorozco0612/box_and_bin"
+dataset_repo_id: "Sorozco0612/tblock_demo"
 dataset_root: null
 dataset_task: teleop
 dataset_fps: 15

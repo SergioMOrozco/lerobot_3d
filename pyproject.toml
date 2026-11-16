@@ -51,6 +51,7 @@ Issues = "https://github.com/SergioMOrozco/lerobot_3d/issues"
 
 [project.scripts]
 lerobot-teleop = "lerobot_3d.control.teleop:main"
+lerobot-trim = "lerobot_3d.recording.trim:main"
 
 [tool.setuptools]
 include-package-data = true

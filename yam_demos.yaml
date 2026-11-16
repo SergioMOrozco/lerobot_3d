@@ -1,0 +1,41 @@
+# Real YAM arms over ROS 2 (the Jetson rig on the Ethernet link), driven by the keyboard teleop.
+#   lerobot-teleop --config yam_rig.yaml
+# Run it in the lerobot_3d_ros conda env (RoboStack ROS 2 Humble) with RMW_IMPLEMENTATION,
+# CYCLONEDDS_URI and ROS_DOMAIN_ID set. Don't source anything from /opt/ros in that terminal: a
+# system ROS (e.g. Jazzy) shadows the env's rclpy and fails to import.
+# Keys (this terminal needs focus):
+#   w/s: +x/-x  a/d: +y/-y  r/f: +z/-z  i/k: pitch  j/l: yaw  u/o: roll
+#   g/h: gripper open/close  Tab: switch arm  0: home arm  Shift: 4x
+# The keyboard starts from the arms' measured pose. Commands are limited to 1 rad/s and 0.3 rad from
+# the measured joints. The viser Home button eases both arms to the URDF rest pose (all joints 0).
+robot_type: yam
+leaders:
+  - type: keyboard
+followers:
+  - side: left               # /left/joint_states -> /left/cmd_joint
+  - side: right              # /right/joint_states -> /right/cmd_joint
+realsense_serials: []
+# Cameras: add once you know each one's depth topic (`ros2 topic list | grep camera`). Each needs
+# color/image_raw/compressed, raw depth (depth_raw/image_rect_raw), both camera_info topics and
+# /tf_static. A fixed camera (no link) also needs an "X_WC" entry in extrinsic_calibration.json.
+ros_cameras:
+  - namespace: /camera/left_wrist
+    link: left_camera
+  - namespace: /camera/right_wrist
+    link: right_camera
+  - namespace: /camera/top          # overhead; X_WC "camera_top" in extrinsic_calibration.json is the
+                                    # URDF's nominal top_camera pose until you calibrate it
+viser_port: 8080
+
+
+# Camera extrinsics JSON (cwd, LEROBOT_3D_EXTRINSIC_JSON, or src/ next to package).
+extrinsic_json: extrinsic_calibration.json
+
+# Non-empty -> record episodes into a LeRobotDataset (e.g. local/my_task). In the terminal:
+# Enter starts an episode, Space ends it, then y/n keeps or discards it. dataset_root: null
+# uses LeRobot's default location (HF_LEROBOT_HOME/<repo_id>); an existing dataset there is
+# appended to. The teleop loop runs at dataset_fps while recording is configured.
+dataset_repo_id: "Sorozco0612/tblock_demos"
+dataset_root: null
+dataset_task: teleop
+dataset_fps: 15

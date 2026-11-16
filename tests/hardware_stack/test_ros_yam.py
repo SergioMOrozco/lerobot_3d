@@ -17,6 +17,7 @@ from lerobot_3d.point_clouds.rgbd import (
     colored_cloud,
     decode_color,
     decode_depth,
+    decode_raw_depth,
     depth_to_points,
     register_depth_to_color,
     sample_colors,
@@ -25,6 +26,7 @@ from lerobot_3d.ros_hub import (
     YAM_FINGER_TRAVEL_M,
     ArmSample,
     CameraFrame,
+    is_compressed_topic,
     joint_observation,
     lookup_transform,
 )
@@ -91,6 +93,25 @@ def test_decode_ros_compressed_formats():
     bgr[..., 2] = 255  # red in BGR
     rgb = decode_color("bgr8; png compressed", cv2.imencode(".png", bgr)[1].tobytes())
     assert tuple(rgb[0, 0]) == (255, 0, 0)
+
+
+def test_decode_raw_depth_handles_padding_endianness_and_bad_encodings():
+    depth = (np.arange(6 * 5, dtype=np.uint16) * 1000).reshape(6, 5)
+    padded = np.zeros((6, 12), np.uint8)  # step 12 > width * 2 = 10
+    padded[:, :10] = depth.astype("<u2").view(np.uint8).reshape(6, 10)
+    np.testing.assert_array_equal(decode_raw_depth("16UC1", 6, 5, 12, False, padded.tobytes()), depth)
+    big = depth.astype(">u2").tobytes()
+    np.testing.assert_array_equal(decode_raw_depth("mono16", 6, 5, 10, True, big), depth)
+    with pytest.raises(ValueError):
+        decode_raw_depth("32FC1", 6, 5, 20, False, b"\0" * 120)
+    with pytest.raises(ValueError):
+        decode_raw_depth("16UC1", 6, 5, 10, False, b"\0" * 59)
+
+
+def test_depth_topic_kind():
+    assert is_compressed_topic("depth_raw/image_rect_raw/compressedDepth")
+    assert is_compressed_topic("color/image_raw/compressed/")
+    assert not is_compressed_topic("depth_raw/image_rect_raw")
 
 
 def test_joint_observation_uses_lerobot_keys_and_a_0_to_1_gripper():
